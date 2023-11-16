@@ -1,13 +1,13 @@
 import sys
 from pathlib import Path
 
-import neptune.new as neptune
+import neptune
 import numpy as np
 import os
 import glob
 import argparse
 
-from neptune.new import Run
+from neptune import Run
 
 import backbone
 import configs
@@ -152,15 +152,15 @@ def setup_neptune(params) -> Run:
                 run_id = f.read()
                 print("Resuming neptune run", run_id)
 
-        run = neptune.init(
+        run = neptune.init_run(
             name=run_name,
             source_files="**/*.py",
             tags=[params.checkpoint_suffix] if params.checkpoint_suffix != "" else [],
-            run=run_id
+            with_id=run_id
         )
         with run_file.open("w") as f:
-            f.write(run._short_id)
-            print("Starting neptune run", run._short_id)
+            f.write(run["sys/id"].fetch())
+            print("Starting neptune run", run["sys/id"].fetch())
         run["params"] = vars(params.params)
         run["cmd"] = f"python {' '.join(sys.argv)}"
         return run

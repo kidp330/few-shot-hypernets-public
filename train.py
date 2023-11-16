@@ -1,5 +1,6 @@
 import json
 import sys
+import gc
 from collections import defaultdict
 from typing import Type, List, Union, Dict, Optional
 from copy import deepcopy
@@ -7,7 +8,7 @@ from copy import deepcopy
 import numpy as np
 import torch
 import random
-from neptune.new import Run
+from neptune import Run
 import torch.optim
 import torch.optim.lr_scheduler as lr_scheduler
 import os
@@ -27,7 +28,7 @@ from methods.hypernets.bayeshmaml import BayesHMAML
 from methods.hypernets.hypermaml import HyperMAML
 from io_utils import model_dict, parse_args, get_resume_file, setup_neptune
 
-from neptune.new.types import File
+from neptune.types import File
 
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -491,8 +492,16 @@ if __name__ == '__main__':
             # add default test params
             params.adaptation = True
             params.repeat = 5
-
+            print('======BEFORE=====')
+            print(torch.cuda.memory_allocated())
+            print(torch.cuda.max_memory_allocated())
+            print('=================')
             print(f"Testing with {hn_val_epochs=}")
             test_results = perform_test(params)
+            print('========AFTER====')
+            print(torch.cuda.memory_allocated())
+            print(torch.cuda.max_memory_allocated())
+            print('=================')
             if neptune_run is not None:
                 neptune_run[f"full_test/{d}/metrics @ {hn_val_epochs}"] = test_results
+            neptune_run.stop()
