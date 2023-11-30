@@ -3,3 +3,4 @@ h5py
 gpytorch
 neptune
 matplotlib
+tensorboardX
