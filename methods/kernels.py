@@ -4,7 +4,15 @@ import torch.nn as nn
 
 
 class NNKernel(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, num_layers: int, hidden_dim: int, flatten: bool =False, **kwargs):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_layers: int,
+        hidden_dim: int,
+        flatten: bool = False,
+        **kwargs
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -14,7 +22,6 @@ class NNKernel(nn.Module):
         self.model = self.create_model()
 
     def create_model(self):
-
         if self.num_layers == 0:
             modules = [nn.Linear(self.input_dim, self.output_dim)]
         else:
@@ -30,7 +37,9 @@ class NNKernel(nn.Module):
         model = nn.Sequential(*modules)
         return model
 
-    def forward(self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params):
+    def forward(
+        self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params
+    ):
         r"""
         Computes the covariance between x1 and x2.
         This method should be imlemented by all Kernel subclasses.
@@ -58,7 +67,6 @@ class NNKernel(nn.Module):
         if last_dim_is_batch:
             raise NotImplementedError()
         else:
-
             z1 = self.model(x1)
             z2 = self.model(x2)
 
@@ -69,8 +77,17 @@ class NNKernel(nn.Module):
             else:
                 return out
 
+
 class CosineNNKernel(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, num_layers: int, hidden_dim: int, flatten: bool =False, **kwargs):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_layers: int,
+        hidden_dim: int,
+        flatten: bool = False,
+        **kwargs
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -80,7 +97,6 @@ class CosineNNKernel(nn.Module):
         self.model = self.create_model()
 
     def create_model(self):
-
         if self.num_layers == 0:
             modules = [nn.Linear(self.input_dim, self.output_dim)]
         else:
@@ -96,11 +112,12 @@ class CosineNNKernel(nn.Module):
         model = nn.Sequential(*modules)
         return model
 
-    def forward(self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params):
+    def forward(
+        self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params
+    ):
         if last_dim_is_batch:
             raise NotImplementedError()
         else:
-
             z1 = self.model(x1)
             z2 = self.model(x2)
 
@@ -130,7 +147,6 @@ class CosineDistanceKernel(nn.Module):
         return res
 
 
-
 class PositiveLinear(nn.Module):
     def __init__(self, in_features, out_features):
         super(PositiveLinear, self).__init__()
@@ -151,7 +167,7 @@ class NNKernelNoInner(gpytorch.kernels.Kernel):
     def __init__(self, input_dim, num_layers, hidden_dim, flatten=False, **kwargs):
         super(NNKernelNoInner, self).__init__(**kwargs)
 
-        self.input_dim = input_dim*2
+        self.input_dim = input_dim * 2
         self.output_dim = 1
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
@@ -159,7 +175,6 @@ class NNKernelNoInner(gpytorch.kernels.Kernel):
         self.model = self.create_model()
 
     def create_model(self):
-
         assert self.num_layers >= 1, "Number of hidden layers must be at least 1"
         modules = [PositiveLinear(self.input_dim, self.hidden_dim), nn.Sigmoid()]
         if self.flatten:
@@ -169,11 +184,12 @@ class NNKernelNoInner(gpytorch.kernels.Kernel):
             modules.append(nn.Sigmoid())
         modules.append(PositiveLinear(self.hidden_dim, self.output_dim))
 
-
         model = nn.Sequential(*modules)
         return model
 
-    def forward(self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params):
+    def forward(
+        self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params
+    ):
         r"""
         Computes the covariance between x1 and x2.
         This method should be imlemented by all Kernel subclasses.
@@ -203,17 +219,17 @@ class NNKernelNoInner(gpytorch.kernels.Kernel):
         else:
             n = x1.shape[0]
             m = x2.shape[0]
-            out = torch.zeros((n,m), device=x1.get_device())
+            out = torch.zeros((n, m), device=x1.get_device())
 
             for i in range(n):
-                for j in range(i+1):
+                for j in range(i + 1):
                     out[i, j] = self.model(torch.cat((x1[i], x2[j]))).view(-1)
                     if i != j:
                         out[j, i] = out[i, j]
 
-            #npout = out.cpu().detach().numpy()
-            #print(np.linalg.eigvals(npout))
-            #assert np.all(np.linalg.eigvals(npout) +1e-2 >= 0), "not positive"
+            # npout = out.cpu().detach().numpy()
+            # print(np.linalg.eigvals(npout))
+            # assert np.all(np.linalg.eigvals(npout) +1e-2 >= 0), "not positive"
             if diag:
                 return torch.diag(out)
             else:
@@ -234,7 +250,9 @@ class MultiNNKernel(gpytorch.kernels.Kernel):
         """
         return self.num_tasks
 
-    def forward(self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params):
+    def forward(
+        self, x1, x2, diag=False, last_dim_is_batch=False, full_covar=True, **params
+    ):
         r"""
         Computes the covariance between x1 and x2.
         This method should be imlemented by all Kernel subclasses.
@@ -264,14 +282,18 @@ class MultiNNKernel(gpytorch.kernels.Kernel):
         else:
             n = x1.shape[0]
             m = x2.shape[0]
-            out = torch.zeros((n * self.num_tasks, m * self.num_tasks), device=x1.get_device())
+            out = torch.zeros(
+                (n * self.num_tasks, m * self.num_tasks), device=x1.get_device()
+            )
             for i in range(self.num_tasks):
                 for j in range(self.num_tasks):
-
                     z1 = self.kernels[i].model(x1)
                     z2 = self.kernels[j].model(x2)
 
-                    out[i:n*self.num_tasks:self.num_tasks, j:m*self.num_tasks:self.num_tasks] = torch.matmul(z1, z2.T)
+                    out[
+                        i : n * self.num_tasks : self.num_tasks,
+                        j : m * self.num_tasks : self.num_tasks,
+                    ] = torch.matmul(z1, z2.T)
             if diag:
                 return torch.diag(out)
             else:
@@ -290,6 +312,10 @@ def init_kernel_function(kernel_input_dim, params):
         kernel_layers_no = params.hn_kernel_layers_no
         kernel_hidden_dim = params.hn_kernel_hidden_dim
         if params.hn_use_cosine_nn_kernel:
-            return CosineNNKernel(kernel_input_dim, kernel_output_dim, kernel_layers_no, kernel_hidden_dim)
+            return CosineNNKernel(
+                kernel_input_dim, kernel_output_dim, kernel_layers_no, kernel_hidden_dim
+            )
         else:
-            return NNKernel(kernel_input_dim, kernel_output_dim, kernel_layers_no, kernel_hidden_dim)
+            return NNKernel(
+                kernel_input_dim, kernel_output_dim, kernel_layers_no, kernel_hidden_dim
+            )

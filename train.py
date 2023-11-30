@@ -1,9 +1,7 @@
 import json
 import sys
-import gc
 from collections import defaultdict
 from typing import Type, List, Union, Dict, Optional
-from copy import deepcopy
 
 import numpy as np
 import torch
@@ -399,7 +397,8 @@ if __name__ == '__main__':
     else:
         raise ValueError('Unknown method')
 
-    model = model.cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
 
     params.checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (configs.save_dir, params.dataset, params.model, params.method)
 
@@ -426,7 +425,7 @@ if __name__ == '__main__':
             model.load_state_dict(tmp['state'])
             print("Resuming training from", resume_file, "epoch", start_epoch)
 
-    elif params.warmup:  # We also support warmup from pretrained baseline feature, but we never used in our paper
+    elif params.warmup:  # We also support warmup from pretrained baseline feature, but we never used it in our paper
         baseline_checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (
             configs.save_dir, params.dataset, params.model, 'baseline')
         if params.train_aug:
@@ -492,16 +491,8 @@ if __name__ == '__main__':
             # add default test params
             params.adaptation = True
             params.repeat = 5
-            print('======BEFORE=====')
-            print(torch.cuda.memory_allocated())
-            print(torch.cuda.max_memory_allocated())
-            print('=================')
             print(f"Testing with {hn_val_epochs=}")
             test_results = perform_test(params)
-            print('========AFTER====')
-            print(torch.cuda.memory_allocated())
-            print(torch.cuda.max_memory_allocated())
-            print('=================')
             if neptune_run is not None:
                 neptune_run[f"full_test/{d}/metrics @ {hn_val_epochs}"] = test_results
             neptune_run.stop()

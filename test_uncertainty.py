@@ -1,27 +1,22 @@
 import torch
 import numpy as np
 import random
-from torch.autograd import Variable
 import torch.nn as nn
 import torch.optim
-import json
 import torch.utils.data.sampler
 import os
-import glob
-import time
 
 import configs
 import backbone
 import data.feature_loader as feat_loader
 from data.datamgr import SetDataManager
-from methods.baselinetrain import BaselineTrain
 from methods.baselinefinetune import BaselineFinetune
 from methods.protonet import ProtoNet
 from methods.DKT import DKT
 from methods.matchingnet import MatchingNet
 from methods.relationnet import RelationNet
 from methods.maml import MAML
-from io_utils import model_dict, get_resume_file, parse_args, get_best_file , get_assigned_file
+from io_utils import model_dict, device, parse_args, get_best_file , get_assigned_file
 
 def _set_seed(seed, verbose=True):
     if(seed!=0):
@@ -61,7 +56,7 @@ class ECELoss(nn.Module):
 
     def calibrate(self, logits, labels, iterations=50, lr=0.01):
         temperature_raw = torch.ones(1, requires_grad=True, device="cuda")
-        nll_criterion = nn.CrossEntropyLoss().cuda()
+        nll_criterion = nn.CrossEntropyLoss().to(device)
         optimizer = torch.optim.LBFGS([temperature_raw], lr=lr, max_iter=iterations)
         softplus = nn.Softplus() #temperature must be > zero, Softplus could be used
         def closure():
@@ -136,7 +131,7 @@ def get_logits_targets(params):
     else:
        raise ValueError('Unknown method')
 
-    model = model.cuda()
+    model = model.to(device)
 
     checkpoint_dir = '%s/checkpoints/%s/%s_%s' %(configs.save_dir, params.dataset, params.model, params.method)
     if params.train_aug:
@@ -195,7 +190,7 @@ def get_logits_targets(params):
         targets_list = list()    
         for i, (x,_) in enumerate(novel_loader):
             logits = model.get_logits(x).detach()
-            targets = torch.tensor(np.repeat(range(params.test_n_way), model.n_query)).cuda()
+            targets = torch.tensor(np.repeat(range(params.test_n_way), model.n_query)).to(device)
             logits_list.append(logits) #.cpu().detach().numpy())
             targets_list.append(targets) #.cpu().detach().numpy())
     else:
@@ -218,7 +213,7 @@ def get_logits_targets(params):
             z_all = torch.from_numpy(np.array(z_all))
             model.n_query = n_query
             logits  = model.set_forward(z_all, is_feature = True).detach()
-            targets = torch.tensor(np.repeat(range(n_way), n_query)).cuda()
+            targets = torch.tensor(np.repeat(range(n_way), n_query)).to(device)
             logits_list.append(logits)
             targets_list.append(targets)
             #----------------------

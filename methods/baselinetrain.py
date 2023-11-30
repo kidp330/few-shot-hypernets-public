@@ -1,11 +1,8 @@
 import backbone
-import utils
 
-import torch
 import torch.nn as nn
-from torch.autograd import Variable
-import numpy as np
-import torch.nn.functional as F
+
+from io_utils import device
 
 class BaselineTrain(nn.Module):
     def __init__(self, model_func, num_class, loss_type = 'softmax'):
@@ -21,14 +18,14 @@ class BaselineTrain(nn.Module):
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(self,x):
-        x    = Variable(x.cuda())
+        x    = x.to(device)
         out  = self.feature.forward(x)
         scores  = self.classifier.forward(out)
         return scores
 
     def forward_loss(self, x, y):
         scores = self.forward(x)
-        y = Variable(y.cuda())
+        y = y.to(device)
         return self.loss_fn(scores, y )
     
     def train_loop(self, epoch, train_loader, optimizer):

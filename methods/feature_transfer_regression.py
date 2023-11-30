@@ -1,21 +1,18 @@
 import numpy as np
-import gpytorch
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import backbone
-from torch.autograd import Variable
+from torch import nn
+
 from data.qmul_loader import get_batch, train_people, test_people
+from io_utils import device
 
 class Regressor(nn.Module):
     def __init__(self):
-        super(Regressor, self).__init__()
+        super().__init__()
         self.layer4 = nn.Linear(2916, 1)
 
     def return_clones(self):
-        layer4_w = self.layer4.weight.data.clone().detach()
-        layer4_b = self.layer4.bias.data.clone().detach()
+        self.layer4.weight.data.clone().detach()
+        self.layer4.bias.data.clone().detach()
 
     def assign_clones(self, weights_list):
         self.layer4.weight.data.copy_(weights_list[0])
@@ -35,7 +32,7 @@ class FeatureTransfer(nn.Module):
 
     def train_loop(self, epoch, optimizer):
         batch, batch_labels = get_batch(train_people)
-        batch, batch_labels = batch.cuda(), batch_labels.cuda()
+        batch, batch_labels = batch.to(device), batch_labels.to(device)
 
         for inputs, labels in zip(batch, batch_labels):
             optimizer.zero_grad()
@@ -55,13 +52,13 @@ class FeatureTransfer(nn.Module):
         support_ind = list(np.random.choice(list(range(19)), replace=False, size=n_support))
         query_ind   = [i for i in range(19) if i not in support_ind]
 
-        x_all = inputs.cuda()
-        y_all = targets.cuda()
+        x_all = inputs.to(device)
+        y_all = targets.to(device)
 
-        x_support = inputs[:,support_ind,:,:,:].cuda()
-        y_support = targets[:,support_ind].cuda()
-        x_query   = inputs[:,query_ind,:,:,:].cuda()
-        y_query   = targets[:,query_ind].cuda()
+        x_support = inputs[:,support_ind,:,:,:].to(device)
+        y_support = targets[:,support_ind].to(device)
+        x_query   = inputs[:,query_ind,:,:,:].to(device)
+        y_query   = targets[:,query_ind].to(device)
 
         # choose a random test person
         n = np.random.randint(0, len(test_people)-1)

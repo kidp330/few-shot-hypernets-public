@@ -1,41 +1,40 @@
-# This code is modified from https://github.com/jakesnell/prototypical-networks 
+# This code is modified from https://github.com/jakesnell/prototypical-networks
 
-import backbone
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
-import numpy as np
-import torch.nn.functional as F
+
 from methods.meta_template import MetaTemplate
+from io_utils import device
 
 class ProtoNet(MetaTemplate):
-    def __init__(self, model_func,  n_way, n_support, n_query=None):
-        super(ProtoNet, self).__init__( model_func,  n_way, n_support)
+    def __init__(self, model_func, n_way, n_support, n_query=None):
+        super(ProtoNet, self).__init__(model_func, n_way, n_support)
         self.loss_fn = nn.CrossEntropyLoss()
 
+    def set_forward(self, x, is_feature=False):
+        z_support, z_query = self.parse_feature(x, is_feature)
 
-    def set_forward(self,x,is_feature = False):
-        z_support, z_query  = self.parse_feature(x,is_feature)
-
-        z_support   = z_support.contiguous()
-        z_proto     = z_support.view(self.n_way, self.n_support, -1 ).mean(1) #the shape of z is [n_data, n_dim]
-        z_query     = z_query.contiguous().view(self.n_way* self.n_query, -1 )
+        z_support = z_support.contiguous()
+        z_proto = z_support.view(self.n_way, self.n_support, -1).mean(
+            1
+        )  # the shape of z is [n_data, n_dim]
+        z_query = z_query.contiguous().view(self.n_way * self.n_query, -1)
 
         dists = euclidean_dist(z_query, z_proto)
         scores = -dists
         return scores
 
-
     def set_forward_loss(self, x):
-        y_query = torch.from_numpy(np.repeat(range( self.n_way ), self.n_query ))
-        y_query = Variable(y_query.cuda())
+        y_query = torch.from_numpy(np.repeat(range(self.n_way), self.n_query))
+        y_query = y_query.to(device)
 
         scores = self.set_forward(x)
 
-        return self.loss_fn(scores, y_query )
+        return self.loss_fn(scores, y_query)
 
 
-def euclidean_dist( x, y):
+def euclidean_dist(x, y):
     # x: N x D
     # y: M x D
     n = x.size(0)

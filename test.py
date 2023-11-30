@@ -23,7 +23,7 @@ from methods.relationnet import RelationNet
 from methods.maml import MAML
 from methods.hypernets.bayeshmaml import BayesHMAML
 from methods.hypernets.hypermaml import HyperMAML
-from io_utils import model_dict, parse_args, get_best_file , get_assigned_file
+from io_utils import model_dict, device, parse_args, get_best_file , get_assigned_file
 
 def _set_seed(seed, verbose=True):
     if(seed!=0):
@@ -125,7 +125,7 @@ def single_test(params):
        raise ValueError('Unknown method')
     
     few_shot_params["n_query"] = 15
-    model = model.cuda()
+    model = model.to(device)
 
     checkpoint_dir = '%s/checkpoints/%s/%s_%s' %(
         configs.save_dir,
