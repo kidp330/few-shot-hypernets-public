@@ -8,7 +8,7 @@ from torch import nn as nn
 from torch.nn import functional as F
 
 import backbone
-from io_utils import device
+from backbone import device
 from methods.hypernets.utils import accuracy_from_scores, get_param_dict
 from methods.maml import MAML
 
@@ -181,14 +181,14 @@ class HyperMAML(MAML):
                 upper = (i + 1) * self.n_support
                 new_embeddings[i] = embeddings[lower:upper, :].mean(dim=0)
 
-            return new_embeddings.to(device)
+            return new_embeddings.to(device())
 
         return embeddings
 
     def get_support_data_labels(self):
         return torch.from_numpy(
             np.repeat(range(self.n_way), self.n_support)
-        ).to(device)  # labels for support data
+        ).to(device())  # labels for support data
 
     def get_hn_delta_params(self, support_embeddings):
         if self.hm_detach_before_hyper_net:
@@ -361,7 +361,7 @@ class HyperMAML(MAML):
 
             return delta_params
         return [
-            torch.zeros(*i).to(device)
+            torch.zeros(*i).to(device())
             for (_, i) in self.target_net_param_shapes.items()
         ]
 
@@ -382,7 +382,7 @@ class HyperMAML(MAML):
 
         assert is_feature == False, "MAML do not support fixed feature"
 
-        x = x.to(device)
+        x = x.to(device())
         support_data = (
             x[:, : self.n_support, :, :, :]
             .contiguous()
@@ -442,12 +442,12 @@ class HyperMAML(MAML):
         scores, total_delta_sum = self.set_forward(
             x, is_feature=False, train_stage=True
         )
-        query_data_labels = torch.from_numpy(np.repeat(range(self.n_way), self.n_query)).to(device)
+        query_data_labels = torch.from_numpy(np.repeat(range(self.n_way), self.n_query)).to(device())
 
         if self.hm_support_set_loss:
             support_data_labels = torch.from_numpy(
                 np.repeat(range(self.n_way), self.n_support)
-            ).to(device)
+            ).to(device())
             query_data_labels = torch.cat((support_data_labels, query_data_labels))
 
         loss = self.loss_fn(scores, query_data_labels)
@@ -465,7 +465,7 @@ class HyperMAML(MAML):
 
     def set_forward_loss_with_adaptation(self, x):
         scores, _ = self.set_forward(x, is_feature=False, train_stage=False)
-        support_data_labels = torch.from_numpy(np.repeat(range(self.n_way), self.n_support)).to(device)
+        support_data_labels = torch.from_numpy(np.repeat(range(self.n_way), self.n_support)).to(device())
 
         loss = self.loss_fn(scores, support_data_labels)
 

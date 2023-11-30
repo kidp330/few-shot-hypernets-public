@@ -7,8 +7,9 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from io_utils import device
-from methods.hypernets.utils import accuracy_from_scores, get_param_dict, set_from_param_dict
+from backbone import device
+from methods.hypernets.utils import (accuracy_from_scores, get_param_dict,
+                                     set_from_param_dict)
 from methods.meta_template import MetaTemplate
 from methods.transformer import TransformerEncoder
 
@@ -163,8 +164,8 @@ class HyperNetPOC(MetaTemplate):
         x: [n_way, n_shot, hidden_size]
         """
         ys = torch.tensor(list(range(x.shape[0]))).reshape(len(x), 1)
-        ys = ys.repeat(1, x.shape[1]).to(x.device)
-        return ys.to(device)
+        ys = ys.repeat(1, x.shape[1]).to(x.device())
+        return ys.to(device())
 
     def maybe_aggregate_support_feature(
         self, support_feature: torch.Tensor
@@ -219,7 +220,7 @@ class HyperNetPOC(MetaTemplate):
 
         tn = deepcopy(self.target_net_architecture)
         set_from_param_dict(tn, network_params)
-        return tn.to(device)
+        return tn.to(device())
 
     def set_forward(
         self,
@@ -352,9 +353,9 @@ class HyperNetPOC(MetaTemplate):
 
             # TODO 3: perhaps the idea of tasksets is redundant and it's better to update weights at every task
             if i % self.taskset_size == (self.taskset_size - 1) or i == (n_train - 1):
-                loss_sum = torch.tensor(0).to(device)
+                loss_sum = torch.tensor(0).to(device())
                 for tr in range(ts_repeats):
-                    loss_sum = torch.tensor(0).to(device)
+                    loss_sum = torch.tensor(0).to(device())
 
                     for task in taskset:
                         if self.change_way:

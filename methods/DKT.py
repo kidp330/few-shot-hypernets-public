@@ -1,5 +1,5 @@
 ## Original packages
-import backbone
+from backbone import device
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
@@ -10,10 +10,8 @@ from methods.meta_template import MetaTemplate
 ## Our packages
 import gpytorch
 from time import gmtime, strftime
-import random
 from configs import kernel_type
 from models import gp_kernels
-from io_utils import device
 #Check if tensorboardx is installed
 try:
     from tensorboardX import SummaryWriter
@@ -58,8 +56,8 @@ class DKT(MetaTemplate):
             self.writer = SummaryWriter(log_dir=writer_path)
 
     def get_model_likelihood_mll(self, train_x_list=None, train_y_list=None):
-        if(train_x_list is None): train_x_list=[torch.ones(100, 64)dd.to(device)]*self.n_way
-        if(train_y_list is None): train_y_list=[torch.ones(100)dd.to(device)]*self.n_way
+        if(train_x_list is None): train_x_list=[torch.ones(100, 64).to(device())]*self.n_way
+        if(train_y_list is None): train_y_list=[torch.ones(100).to(device())]*self.n_way
         model_list = list()
         likelihood_list = list()
         for train_x, train_y in zip(train_x_list, train_y_list):
@@ -67,9 +65,9 @@ class DKT(MetaTemplate):
             model = ExactGPLayer(train_x=train_x, train_y=train_y, likelihood=likelihood, kernel=kernel_type)
             model_list.append(model)
             likelihood_list.append(model.likelihood)
-        self.model = gpytorch.models.IndependentModelList(*model_list)dd.to(device)
-        self.likelihood = gpytorch.likelihoods.LikelihoodList(*likelihood_list)dd.to(device)
-        self.mll = gpytorch.mlls.SumMarginalLogLikelihood(self.likelihood, self.model)dd.to(device)
+        self.model = gpytorch.models.IndependentModelList(*model_list).to(device())
+        self.likelihood = gpytorch.likelihoods.LikelihoodList(*likelihood_list).to(device())
+        self.mll = gpytorch.mlls.SumMarginalLogLikelihood(self.likelihood, self.model).to(device())
         return self.model, self.likelihood, self.mll
 
     def set_forward(self, x, is_feature=False):
@@ -119,11 +117,11 @@ class DKT(MetaTemplate):
         for i, (x,_) in enumerate(train_loader):
             self.n_query = x.size(1) - self.n_support
             if self.change_way: self.n_way  = x.size(0)
-            x_all = x.contiguous().view(self.n_way * (self.n_support + self.n_query), *x.size()[2:])dd.to(device)
-            y_all = Variable(torch.from_numpy(np.repeat(range(self.n_way), self.n_query+self.n_support))dd.to(device))
-            x_support = x[:,:self.n_support,:,:,:].contiguous().view(self.n_way * (self.n_support), *x.size()[2:])dd.to(device)
+            x_all = x.contiguous().view(self.n_way * (self.n_support + self.n_query), *x.size()[2:]).to(device())
+            y_all = Variable(torch.from_numpy(np.repeat(range(self.n_way), self.n_query+self.n_support)).to(device()))
+            x_support = x[:,:self.n_support,:,:,:].contiguous().view(self.n_way * (self.n_support), *x.size()[2:]).to(device())
             y_support = np.repeat(range(self.n_way), self.n_support)
-            x_query = x[:,self.n_support:,:,:,:].contiguous().view(self.n_way * (self.n_query), *x.size()[2:])dd.to(device)
+            x_query = x[:,self.n_support:,:,:,:].contiguous().view(self.n_way * (self.n_query), *x.size()[2:]).to(device())
             y_query = np.repeat(range(self.n_way), self.n_query)
             x_train = x_all
             y_train = y_all
@@ -135,7 +133,7 @@ class DKT(MetaTemplate):
                 start_index = way * samples_per_model
                 stop_index = start_index+samples_per_model
                 target[start_index:stop_index] = 1.0
-                target_list.append(targetdd.to(device))
+                target_list.append(targetdd.to(device()))
 
             self.model.train()
             self.likelihood.train()
@@ -200,9 +198,9 @@ class DKT(MetaTemplate):
 
     def correct(self, x, N=0, laplace=False):
         ##Dividing input x in query and support set
-        x_support = x[:,:self.n_support,:,:,:].contiguous().view(self.n_way * (self.n_support), *x.size()[2:])dd.to(device)
-        y_support = torch.from_numpy(np.repeat(range(self.n_way), self.n_support))dd.to(device)
-        x_query = x[:,self.n_support:,:,:,:].contiguous().view(self.n_way * (self.n_query), *x.size()[2:])dd.to(device)
+        x_support = x[:,:self.n_support,:,:,:].contiguous().view(self.n_way * (self.n_support), *x.size()[2:]).to(device())
+        y_support = torch.from_numpy(np.repeat(range(self.n_way), self.n_support)).to(device())
+        x_query = x[:,self.n_support:,:,:,:].contiguous().view(self.n_way * (self.n_query), *x.size()[2:]).to(device())
         y_query = np.repeat(range(self.n_way), self.n_query)
 
         ## Laplace approximation of the posterior
@@ -233,7 +231,7 @@ class DKT(MetaTemplate):
             start_index = way * samples_per_model
             stop_index = start_index+samples_per_model
             target[start_index:stop_index] = 1.0
-            target_list.append(targetdd.to(device))
+            target_list.append(targetdd.to(device()))
 
         z_train = self.feature_extractor.forward(x_train).detach() #[340, 64]
         if(self.normalize): z_train = F.normalize(z_train, p=2, dim=1)
@@ -299,9 +297,9 @@ class DKT(MetaTemplate):
     def get_logits(self, x):
         self.n_query = x.size(1) - self.n_support
         ##Dividing input x in query and support set
-        x_support = x[:,:self.n_support,:,:,:].contiguous().view(self.n_way * (self.n_support), *x.size()[2:])dd.to(device)
-        y_support = torch.from_numpy(np.repeat(range(self.n_way), self.n_support))dd.to(device)
-        x_query = x[:,self.n_support:,:,:,:].contiguous().view(self.n_way * (self.n_query), *x.size()[2:])dd.to(device)
+        x_support = x[:,:self.n_support,:,:,:].contiguous().view(self.n_way * (self.n_support), *x.size()[2:]).to(device())
+        y_support = torch.from_numpy(np.repeat(range(self.n_way), self.n_support)).to(device())
+        x_query = x[:,self.n_support:,:,:,:].contiguous().view(self.n_way * (self.n_query), *x.size()[2:]).to(device())
         y_query = np.repeat(range(self.n_way), self.n_query)
 
         # Init to dummy values
@@ -314,7 +312,7 @@ class DKT(MetaTemplate):
             start_index = way * samples_per_model
             stop_index = start_index+samples_per_model
             target[start_index:stop_index] = 1.0
-            target_list.append(targetdd.to(device))
+            target_list.append(targetdd.to(device()))
         z_train = self.feature_extractor.forward(x_train).detach() #[340, 64]
         if(self.normalize): z_train = F.normalize(z_train, p=2, dim=1)
         train_list = [z_train]*self.n_way

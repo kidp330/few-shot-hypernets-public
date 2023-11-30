@@ -6,7 +6,6 @@ from pathlib import Path
 
 import neptune
 import numpy as np
-import torch
 from neptune import Run
 
 import backbone
@@ -27,9 +26,6 @@ model_dict = dict(
     Conv4WithKernel=backbone.Conv4WithKernel,
     ResNetWithKernel=backbone.ResNetWithKernel,
 )
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 class ParamHolder:
     """A class for checking which script arguments were actually used at any time"""
@@ -330,4 +326,3 @@ def setup_neptune(params) -> Run:
 
     except Exception as e:
         print("Cannot initialize neptune because of", e)
-        pass

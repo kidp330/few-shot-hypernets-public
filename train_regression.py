@@ -5,7 +5,8 @@ import torch
 
 import backbone
 import configs
-from io_utils import device, parse_args_regression
+from backbone import device
+from io_utils import parse_args_regression
 from methods.DKT_regression import DKT
 from methods.feature_transfer_regression import FeatureTransfer
 
@@ -25,12 +26,12 @@ params.checkpoint_dir = "%scheckpoints/%s/%s_%s" % (
     params.method,
 )
 
-bb = backbone.Conv3().to(device)
+bb = backbone.Conv3().to(device())
 
 if params.method == "DKT":
-    model = DKT(bb).to(device)
+    model = DKT(bb).to(device())
 elif params.method == "transfer":
-    model = FeatureTransfer(bb).to(device)
+    model = FeatureTransfer(bb).to(device())
 else:
     raise ValueError("Unrecognised method")
 

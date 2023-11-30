@@ -6,11 +6,11 @@ from torch import nn as nn
 from torch.nn import functional as F
 
 import backbone
-from io_utils import device
+from backbone import device
 from methods.hypernets.hypermaml import HyperMAML
 from methods.hypernets.utils import (get_param_dict,
                                      kl_diag_gauss_with_standard_gauss,
-                                     reparameterize)
+                                     reparameterize) # __jm__ configure black and isort to use the same schema
 
 
 class BHyperNet(nn.Module):
@@ -19,7 +19,7 @@ class BHyperNet(nn.Module):
     def __init__(
         self, hn_hidden_size, n_way, embedding_size, feat_dim, out_neurons, params
     ):
-        super(BHyperNet, self).__init__()
+        super().__init__()
 
         self.hn_head_len = params.hn_head_len
 
@@ -48,7 +48,7 @@ class BHyperNet(nn.Module):
 
 class BayesHMAML(HyperMAML):
     def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
-        super(BayesHMAML, self).__init__(
+        super().__init__(
             model_func, n_way, n_support, n_query, approx=approx, params=params
         )
         # loss function component
@@ -352,11 +352,11 @@ class BayesHMAML(HyperMAML):
 
         query_data_labels = torch.from_numpy(
             np.repeat(range(self.n_way), self.n_query)
-        ).to(device)
+        ).to(device())
         if self.hm_support_set_loss:
             support_data_labels = torch.from_numpy(
                 np.repeat(range(self.n_way), self.n_support)
-            ).to(device)
+            ).to(device())
             query_data_labels = torch.cat((support_data_labels, query_data_labels))
 
         reduction = self.kl_scale
@@ -391,7 +391,7 @@ class BayesHMAML(HyperMAML):
         )  # scores from adapted copy
         support_data_labels = torch.from_numpy(
             np.repeat(range(self.n_way), self.n_support)
-        ).to(device)
+        ).to(device())
 
         reduction = self.kl_scale
 

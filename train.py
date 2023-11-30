@@ -13,6 +13,7 @@ import os
 
 import configs
 import backbone
+from backbone import device
 from data.datamgr import SimpleDataManager, SetDataManager
 from methods.baselinetrain import BaselineTrain
 from methods.DKT import DKT
@@ -397,8 +398,7 @@ if __name__ == '__main__':
     else:
         raise ValueError('Unknown method')
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    model = model.to(device())
 
     params.checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (configs.save_dir, params.dataset, params.model, params.method)
 

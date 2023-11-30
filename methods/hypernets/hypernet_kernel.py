@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 import torch
 from torch import nn
 
-from io_utils import device
+from backbone import device
 from methods.hypernets import HyperNetPOC
 from methods.hypernets.utils import accuracy_from_scores, set_from_param_dict
 from methods.kernel_convolutions import KernelConv
@@ -196,8 +196,8 @@ class HyperShot(HyperNetPOC):
         # Remove self relations by matrix multiplication
         if self.hn_no_self_relations:
             zero_diagonal_matrix = torch.ones_like(kernel_values_tensor).to(
-                device
-            ) - torch.eye(kernel_values_tensor.shape[0]).to(device)
+                device()
+            ) - torch.eye(kernel_values_tensor.shape[0]).to(device())
             kernel_values_tensor = kernel_values_tensor * zero_diagonal_matrix
             return torch.flatten(kernel_values_tensor[kernel_values_tensor != 0.0])
 
@@ -249,7 +249,7 @@ class HyperShot(HyperNetPOC):
         tn = deepcopy(self.target_net_architecture)
         set_from_param_dict(tn, network_params)
         tn.support_feature = support_feature
-        return tn.to(device)
+        return tn.to(device())
 
     def set_forward(
         self,

@@ -6,9 +6,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from backbone import device
 from configs import kernel_type
 from data.qmul_loader import get_batch, test_people, train_people
-from io_utils import device
 
 
 class DKT(nn.Module):
@@ -20,20 +20,20 @@ class DKT(nn.Module):
 
     def get_model_likelihood_mll(self, train_x=None, train_y=None):
         if train_x is None:
-            train_x = torch.ones(19, 2916).to(device)
+            train_x = torch.ones(19, 2916).to(device())
         if train_y is None:
-            train_y = torch.ones(19).to(device)
+            train_y = torch.ones(19).to(device())
 
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         model = ExactGPLayer(
             train_x=train_x, train_y=train_y, likelihood=likelihood, kernel=kernel_type
         )
 
-        self.model = model.to(device)
-        self.likelihood = likelihood.to(device)
+        self.model = model.to(device())
+        self.likelihood = likelihood.to(device())
         self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(
             self.likelihood, self.model
-        ).to(device)
+        ).to(device())
         self.mse = nn.MSELoss()
 
         return self.model, self.likelihood, self.mll
@@ -46,7 +46,7 @@ class DKT(nn.Module):
 
     def train_loop(self, epoch, optimizer):
         batch, batch_labels = get_batch(train_people)
-        batch, batch_labels = batch.to(device), batch_labels.to(device)
+        batch, batch_labels = batch.to(device()), batch_labels.to(device())
         for inputs, labels in zip(batch, batch_labels):
             optimizer.zero_grad()
             z = self.feature_extractor(inputs)
@@ -78,13 +78,13 @@ class DKT(nn.Module):
         )
         query_ind = [i for i in range(19) if i not in support_ind]
 
-        x_all = inputs.to(device)
-        y_all = targets.to(device)
+        x_all = inputs.to(device())
+        y_all = targets.to(device())
 
-        x_support = inputs[:, support_ind, :, :, :].to(device)
-        y_support = targets[:, support_ind].to(device)
+        x_support = inputs[:, support_ind, :, :, :].to(device())
+        y_support = targets[:, support_ind].to(device())
         x_query = inputs[:, query_ind, :, :, :]
-        y_query = targets[:, query_ind].to(device)
+        y_query = targets[:, query_ind].to(device())
 
         # choose a random test person
         n = np.random.randint(0, len(test_people) - 1)

@@ -1,21 +1,13 @@
-import numpy as np
 import torch
-from torch.autograd import Variable
 import os
-import glob
 import h5py
 
 import configs
 import backbone
+from backbone import device
 from data.datamgr import SimpleDataManager
-from methods.baselinetrain import BaselineTrain
-from methods.baselinefinetune import BaselineFinetune
 from methods.hypernets import hypernet_types
-from methods.protonet import ProtoNet
-from methods.matchingnet import MatchingNet
-from methods.relationnet import RelationNet
-from methods.maml import MAML
-from io_utils import model_dict, device, parse_args, get_resume_file, get_best_file, get_assigned_file
+from io_utils import model_dict, parse_args, get_resume_file, get_best_file, get_assigned_file
 
 
 def save_features(model, data_loader, outfile ):
@@ -27,7 +19,7 @@ def save_features(model, data_loader, outfile ):
     for i, (x,y) in enumerate(data_loader):
         if i%10 == 0:
             print('{:d}/{:d}'.format(i, len(data_loader)))
-        x = x.to(device)
+        x = x.to(device())
         feats = model(x)
         if all_feats is None:
             all_feats = f.create_dataset('all_feats', [max_count] + list( feats.size()[1:]) , dtype='f')
@@ -113,7 +105,7 @@ def do_save_fts(params):
     else:
         model = model_dict[params.model]()
 
-    model = model.to(device)
+    model = model.to(device())
     tmp = torch.load(modelfile)
     state = tmp['state']
     state_keys = list(state.keys())
