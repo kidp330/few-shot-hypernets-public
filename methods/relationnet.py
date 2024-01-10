@@ -4,11 +4,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
+
+import pytorch_lightning as pl
 
 import backbone
 import utils
-from backbone import device
 from methods.meta_template import MetaTemplate
 
 
@@ -65,26 +65,20 @@ class RelationNet(MetaTemplate):
         self.n_support = 3
         self.n_query = 2
 
-        z_support_cpu = z_support.data.cpu().numpy()
+        z_support_cpu = z_support.data.numpy()  # __jm__ remove numpy ugh
         for _epoch in range(100):
             perm_id = np.random.permutation(full_n_support).tolist()
             sub_x = np.array(
                 [z_support_cpu[i, perm_id, :, :, :] for i in range(z_support.size(0))]
             )
-            sub_x = torch.Tensor(sub_x).to(device())
             if self.change_way:
                 self.n_way = sub_x.size(0)
             set_optimizer.zero_grad()
-            y = torch.from_numpy(np.repeat(range(self.n_way), self.n_query))
+            y = torch.repeat_interleave(range(self.n_way), self.n_query)
             scores = self.set_forward(sub_x, is_feature=True)
             if self.loss_type == "mse":
-                y_oh = utils.one_hot(y, self.n_way)
-                y_oh = Variable(y_oh.to(device()))
-
-                loss = self.loss_fn(scores, y_oh)
-            else:
-                y = Variable(y.to(device()))
-                loss = self.loss_fn(scores, y)
+                y = utils.one_hot(y, self.n_way)
+            loss = self.loss_fn(scores, y)
             loss.backward()
             set_optimizer.step()
 
@@ -107,22 +101,17 @@ class RelationNet(MetaTemplate):
         return relations
 
     def set_forward_loss(self, x):
-        y = torch.from_numpy(np.repeat(range(self.n_way), self.n_query))
+        y = torch.repeat_interleave(range(self.n_way), self.n_query)
 
         scores = self.set_forward(x)
         if self.loss_type == "mse":
-            y_oh = utils.one_hot(y, self.n_way)
-            y_oh = Variable(y_oh.to(device()))
-
-            return self.loss_fn(scores, y_oh)
-        else:
-            y = Variable(y.to(device()))
-            return self.loss_fn(scores, y)
+            y = utils.one_hot(y, self.n_way)
+        return self.loss_fn(scores, y)
 
 
-class RelationConvBlock(nn.Module):
+class RelationConvBlock(pl.LightningModule):
     def __init__(self, indim, outdim, padding=0):
-        super(RelationConvBlock, self).__init__()
+        super().__init__()
         self.indim = indim
         self.outdim = outdim
         self.C = nn.Conv2d(indim, outdim, 3, padding=padding)
@@ -142,11 +131,11 @@ class RelationConvBlock(nn.Module):
         return out
 
 
-class RelationModule(nn.Module):
+class RelationModule(pl.LightningModule):
     """docstring for RelationNetwork"""
 
     def __init__(self, input_size, hidden_size, loss_type="mse"):
-        super(RelationModule, self).__init__()
+        super().__init__()
 
         self.loss_type = loss_type
         padding = (

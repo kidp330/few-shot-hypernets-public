@@ -4,7 +4,6 @@ from typing import Optional, Tuple
 import torch
 from torch import nn
 
-from backbone import device
 from methods.hypernets import HyperNetPOC
 from methods.hypernets.utils import accuracy_from_scores, set_from_param_dict
 from methods.kernel_convolutions import KernelConv
@@ -19,7 +18,7 @@ class HyperShot(HyperNetPOC):
         n_way: int,
         n_support: int,
         n_query: int,
-        params: "ArgparseHNParams",
+        params: "ArgparseHNParams",  # __jm__ what did they mean by this
         target_net_architecture: Optional[nn.Module] = None,
     ):
         super().__init__(
@@ -167,7 +166,7 @@ class HyperShot(HyperNetPOC):
         self, support_feature: torch.Tensor, feature_to_classify: torch.Tensor
     ) -> torch.Tensor:
         supp_way, n_support, supp_feat = support_feature.shape
-        n_examples, feat_dim = feature_to_classify.shape
+        _n_examples, _feat_dim = feature_to_classify.shape
         support_features = support_feature.reshape(supp_way * n_support, supp_feat)
 
         kernel_values_tensor = self.kernel_function.forward(
@@ -195,9 +194,9 @@ class HyperShot(HyperNetPOC):
 
         # Remove self relations by matrix multiplication
         if self.hn_no_self_relations:
-            zero_diagonal_matrix = torch.ones_like(kernel_values_tensor).to(
-                device()
-            ) - torch.eye(kernel_values_tensor.shape[0]).to(device())
+            zero_diagonal_matrix = torch.ones_like(kernel_values_tensor) - torch.eye(
+                kernel_values_tensor.shape[0]  # __jm__ better idiomatic way to do this?
+            )
             kernel_values_tensor = kernel_values_tensor * zero_diagonal_matrix
             return torch.flatten(kernel_values_tensor[kernel_values_tensor != 0.0])
 
@@ -249,7 +248,7 @@ class HyperShot(HyperNetPOC):
         tn = deepcopy(self.target_net_architecture)
         set_from_param_dict(tn, network_params)
         tn.support_feature = support_feature
-        return tn.to(device())
+        return tn
 
     def set_forward(
         self,
@@ -325,12 +324,12 @@ class HyperShot(HyperNetPOC):
                 if detach_ft_hn
                 else support_feature_with_classes_one_hot
             )
-            query_feature_to_hn = query_feature_with_zeros
+            _query_feature_to_hn = query_feature_with_zeros
         else:
             feature_to_hn = (
                 support_feature.detach() if detach_ft_hn else support_feature
             )
-            query_feature_to_hn = query_feature
+            _query_feature_to_hn = query_feature
 
         classifier = self.generate_target_net(feature_to_hn)
 

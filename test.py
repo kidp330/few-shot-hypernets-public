@@ -12,10 +12,9 @@ import torch.utils.data.sampler
 import backbone
 import configs
 import data.feature_loader as feat_loader
-from backbone import device
 from data.datamgr import SetDataManager
 from io_utils import get_assigned_file, get_best_file, model_dict, parse_args
-from methods.baselinefinetune import BaselineFinetune
+from methods.baselinetrain import BaselineFinetune
 from methods.DKT import DKT
 from methods.hypernets import hypernet_types
 from methods.hypernets.bayeshmaml import BayesHMAML
@@ -161,7 +160,6 @@ def single_test(params):
         raise ValueError("Unknown method")
 
     few_shot_params["n_query"] = 15
-    model = model.to(device())
 
     checkpoint_dir = "%s/checkpoints/%s/%s_%s" % (
         configs.save_dir,

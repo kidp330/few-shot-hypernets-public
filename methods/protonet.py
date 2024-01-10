@@ -4,13 +4,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from backbone import device
 from methods.meta_template import MetaTemplate
 
 
 class ProtoNet(MetaTemplate):
     def __init__(self, model_func, n_way, n_support, n_query=None):
-        super(ProtoNet, self).__init__(model_func, n_way, n_support)
+        super().__init__(model_func, n_way, n_support)
         self.loss_fn = nn.CrossEntropyLoss()
 
     def set_forward(self, x, is_feature=False):
@@ -27,8 +26,7 @@ class ProtoNet(MetaTemplate):
         return scores
 
     def set_forward_loss(self, x):
-        y_query = torch.from_numpy(np.repeat(range(self.n_way), self.n_query))
-        y_query = y_query.to(device())
+        y_query = torch.interleave(range(self.n_way), self.n_query)
 
         scores = self.set_forward(x)
 

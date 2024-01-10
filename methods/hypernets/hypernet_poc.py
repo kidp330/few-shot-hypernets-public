@@ -7,9 +7,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from backbone import device
-from methods.hypernets.utils import (accuracy_from_scores, get_param_dict,
-                                     set_from_param_dict)
+from methods.hypernets.utils import (
+    accuracy_from_scores,
+    get_param_dict,
+    set_from_param_dict,
+)
 from methods.meta_template import MetaTemplate
 from methods.transformer import TransformerEncoder
 

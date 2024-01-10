@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 from torch import nn
+import pytorch_lightning as pl
 
-from backbone import device
 from data.qmul_loader import get_batch, test_people, train_people
 
 
@@ -24,18 +24,16 @@ class Regressor(nn.Module):
         return out
 
 
-class FeatureTransfer(nn.Module):
+class FeatureTransfer(pl.LightningModule):
     def __init__(self, backbone):
-        super(FeatureTransfer, self).__init__()
-        regressor = Regressor()
+        super().__init__()
+        _regressor = Regressor()
         self.feature_extractor = backbone
         self.model = Regressor()
         self.criterion = nn.MSELoss()
 
     def train_loop(self, epoch, optimizer):
         batch, batch_labels = get_batch(train_people)
-        batch, batch_labels = batch.to(device()), batch_labels.to(device())
-
         for inputs, labels in zip(batch, batch_labels):
             optimizer.zero_grad()
             output = self.model(self.feature_extractor(inputs))
@@ -56,13 +54,13 @@ class FeatureTransfer(nn.Module):
         )
         query_ind = [i for i in range(19) if i not in support_ind]
 
-        x_all = inputs.to(device())
-        y_all = targets.to(device())
+        x_all = inputs
+        y_all = targets
 
-        x_support = inputs[:, support_ind, :, :, :].to(device())
-        y_support = targets[:, support_ind].to(device())
-        x_query = inputs[:, query_ind, :, :, :].to(device())
-        y_query = targets[:, query_ind].to(device())
+        x_support = inputs[:, support_ind, :, :, :]
+        y_support = targets[:, support_ind]
+        _x_query = inputs[:, query_ind, :, :, :]
+        _y_query = targets[:, query_ind]
 
         # choose a random test person
         n = np.random.randint(0, len(test_people) - 1)

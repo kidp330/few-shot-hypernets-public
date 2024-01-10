@@ -4,7 +4,6 @@ import torch.optim as optim
 
 import backbone
 import configs
-from backbone import device
 from io_utils import parse_args_regression
 from methods.DKT_regression import DKT
 from methods.feature_transfer_regression import FeatureTransfer
@@ -21,13 +20,13 @@ params.checkpoint_dir = "%scheckpoints/%s/%s_%s" % (
     params.model,
     params.method,
 )
-bb = backbone.Conv3().to(device())
+bb = backbone.Conv3()
 
 if params.method == "DKT":
-    model = DKT(bb).to(device())
+    model = DKT(bb)
     optimizer = None
 elif params.method == "transfer":
-    model = FeatureTransfer(bb).to(device())
+    model = FeatureTransfer(bb)
     optimizer = optim.Adam([{"params": model.parameters(), "lr": 0.001}])
 else:
     raise ValueError("Unrecognised method")

@@ -6,9 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.weight_norm import WeightNorm
+import pytorch_lightning as pl
 
 
-def device():
+def check_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -25,50 +26,59 @@ def init_layer(L):
         L.bias.data.fill_(0)
 
 
-class distLinear(nn.Module):
-    def __init__(self, indim, outdim):
-        super(distLinear, self).__init__()
+class distLinear(pl.LightningModule):
+    def __init__(
+        self,
+        indim: int,
+        outdim: int,
+        scale_factor: int,
+        class_wise_learnable_norm=True,
+    ):
+        super().__init__()
         self.L = nn.Linear(indim, outdim, bias=False)
-        self.class_wise_learnable_norm = True  # See the issue#4&8 in the github
+
+        self.class_wise_learnable_norm = class_wise_learnable_norm
         if self.class_wise_learnable_norm:
             WeightNorm.apply(
                 self.L, "weight", dim=0
             )  # split the weight update component to direction and norm
 
-        if outdim <= 200:
-            self.scale_factor = 2  # a fixed scale factor to scale the output of cos value into a reasonably large input for softmax
-        else:
-            self.scale_factor = 10  # in omniglot, a larger scale factor is required to handle >1000 output classes.
+        self.scale_factor = scale_factor
 
-    def forward(self, x):
-        x_norm = torch.norm(x, p=2, dim=1).unsqueeze(1).expand_as(x)
-        x_normalized = x.div(x_norm + 0.00001)
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        x_L2 = torch.norm(x, dim=1)  # [v1, v2... vn] -> [||v1||, ||v2||, ... ||vn||]
+        x_L2 = x_L2.unsqueeze(1).expand_as(
+            x
+        )  # -> [[||v1||], [||v2||], ...] -> repeat value along rows
+        x_L2 += (eps := 1e-4)  # add eps~0 to avoid division by zero
+        x_normalized = x.div(
+            x_L2
+        )  # each element of the feature vector is divided by the common norm
+        return x_normalized
+
+    # x is expected to have flat feature vectors
+    def forward(self, x: torch.Tensor):
+        x_normalized = self._normalize(x)
         if not self.class_wise_learnable_norm:
-            L_norm = (
-                torch.norm(self.L.weight.data, p=2, dim=1)
-                .unsqueeze(1)
-                .expand_as(self.L.weight.data)
-            )
-            self.L.weight.data = self.L.weight.data.div(L_norm + 0.00001)
-        cos_dist = self.L(
-            x_normalized
-        )  # matrix product by forward function, but when using WeightNorm, this also multiply the cosine distance by a class-wise learnable norm, see the issue#4&8 in the github
-        scores = self.scale_factor * (cos_dist)
+            self.L.weight.data = self._normalize(self.L.weigh.data)
+
+        # matrix product by forward function, but when using WeightNorm,
+        # this also multiplies the cosine distance by a class-wise learnable norm
+        cos_dist = self.L(x_normalized)
+        scores = self.scale_factor * cos_dist
 
         return scores
 
 
-class Flatten(nn.Module):
-    def __init__(self):
-        super(Flatten, self).__init__()
-
+class Flatten(pl.LightningModule):
     def forward(self, x):
-        return x.view(x.size(0), -1)
+        batch_size = x.size(0)
+        return x.view(batch_size, -1)
 
 
 class Linear_fw(nn.Linear):  # used in MAML to forward input with fast weight
     def __init__(self, in_features, out_features):
-        super(Linear_fw, self).__init__(in_features, out_features)
+        super().__init__(in_features, out_features)
         self.weight.fast = None  # Lazy hack to add fast weight link
         self.bias.fast = None
 
@@ -78,13 +88,13 @@ class Linear_fw(nn.Linear):  # used in MAML to forward input with fast weight
                 x, self.weight.fast, self.bias.fast
             )  # weight.fast (fast weight) is the temporaily adapted weight
         else:
-            out = super(Linear_fw, self).forward(x)
+            out = super().forward(x)
         return out
 
 
 class BLinear_fw(Linear_fw):  # used in BHMAML to forward input with fast weight
     def __init__(self, in_features, out_features):
-        super(BLinear_fw, self).__init__(in_features, out_features)
+        super().__init__(in_features, out_features)
         self.weight.logvar = None
         self.weight.mu = None
         self.bias.logvar = None
@@ -125,7 +135,7 @@ class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
                     x, self.weight.fast, None, stride=self.stride, padding=self.padding
                 )
             else:
-                out = super(Conv2d_fw, self).forward(x)
+                out = super().forward(x)
         else:
             if self.weight.fast is not None and self.bias.fast is not None:
                 out = F.conv2d(
@@ -136,20 +146,20 @@ class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
                     padding=self.padding,
                 )
             else:
-                out = super(Conv2d_fw, self).forward(x)
+                out = super().forward(x)
 
         return out
 
 
 class BatchNorm2d_fw(nn.BatchNorm2d):  # used in MAML to forward input with fast weight
-    def __init__(self, num_features):
+    def __init__(self, num_features, device: torch.device = check_device()):
         super(BatchNorm2d_fw, self).__init__(num_features)
         self.weight.fast = None
         self.bias.fast = None
 
     def forward(self, x):
-        running_mean = torch.zeros(x.data.size()[1]).to(device())
-        running_var = torch.ones(x.data.size()[1]).to(device())
+        running_mean = torch.zeros(x.data.size()[1])
+        running_var = torch.ones(x.data.size()[1])
         if self.weight.fast is not None and self.bias.fast is not None:
             out = F.batch_norm(
                 x,
@@ -175,11 +185,11 @@ class BatchNorm2d_fw(nn.BatchNorm2d):  # used in MAML to forward input with fast
 
 
 # Simple Conv Block
-class ConvBlock(nn.Module):
+class ConvBlock(pl.LightningModule):
     maml = False  # Default
 
     def __init__(self, indim, outdim, pool=True, padding=1):
-        super(ConvBlock, self).__init__()
+        super().__init__()
         self.indim = indim
         self.outdim = outdim
         if self.maml:
@@ -206,7 +216,7 @@ class ConvBlock(nn.Module):
 
 
 # Simple ResNet Block
-class SimpleBlock(nn.Module):
+class SimpleBlock(pl.LightningModule):
     maml = False  # Default
 
     def __init__(self, indim, outdim, half_res):
@@ -281,7 +291,7 @@ class SimpleBlock(nn.Module):
 
 
 # Bottleneck block
-class BottleneckBlock(nn.Module):
+class BottleneckBlock(pl.LightningModule):
     maml = False  # Default
 
     def __init__(self, indim, outdim, half_res):
@@ -362,9 +372,9 @@ class BottleneckBlock(nn.Module):
         return out
 
 
-class ConvNet(nn.Module):
+class ConvNet(pl.LightningModule):
     def __init__(self, depth, flatten=True, pool=False):
-        super(ConvNet, self).__init__()
+        super().__init__()
         trunk = []
         for i in range(depth):
             indim = 3 if i == 0 else 64
@@ -387,10 +397,10 @@ class ConvNet(nn.Module):
 
 
 class ConvNetNopool(
-    nn.Module
+    pl.LightningModule
 ):  # Relation net use a 4 layer conv with pooling in only first two layers, else no pooling
     def __init__(self, depth):
-        super(ConvNetNopool, self).__init__()
+        super().__init__()
         trunk = []
         for i in range(depth):
             indim = 3 if i == 0 else 64
@@ -408,9 +418,11 @@ class ConvNetNopool(
         return out
 
 
-class ConvNetS(nn.Module):  # For omniglot, only 1 input channel, output dim is 64
+class ConvNetS(
+    pl.LightningModule
+):  # For omniglot, only 1 input channel, output dim is 64
     def __init__(self, depth, flatten=True):
-        super(ConvNetS, self).__init__()
+        super().__init__()
         trunk = []
         for i in range(depth):
             indim = 1 if i == 0 else 64
@@ -435,10 +447,10 @@ class ConvNetS(nn.Module):  # For omniglot, only 1 input channel, output dim is 
 
 
 class ConvNetSNopool(
-    nn.Module
+    pl.LightningModule
 ):  # Relation net use a 4 layer conv with pooling in only first two layers, else no pooling. For omniglot, only 1 input channel, output dim is [64,5,5]
     def __init__(self, depth):
-        super(ConvNetSNopool, self).__init__()
+        super().__init__()
         trunk = []
         for i in range(depth):
             indim = 1 if i == 0 else 64
@@ -457,13 +469,13 @@ class ConvNetSNopool(
         return out
 
 
-class ResNet(nn.Module):
+class ResNet(pl.LightningModule):
     maml = False  # Default
 
     def __init__(self, block, list_of_num_layers, list_of_out_dims, flatten=True):
         # list_of_num_layers specifies number of layers in each stage
         # list_of_out_dims specifies number of output channel for each stage
-        super(ResNet, self).__init__()
+        super().__init__()
         assert len(list_of_num_layers) == 4, "Can have only four stages"
         if self.maml:
             conv1 = Conv2d_fw(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -504,9 +516,9 @@ class ResNet(nn.Module):
 
 
 # Backbone for QMUL regression
-class Conv3(nn.Module):
+class Conv3(pl.LightningModule):
     def __init__(self):
-        super(Conv3, self).__init__()
+        super().__init__()
         self.layer1 = nn.Conv2d(3, 36, 3, stride=2, dilation=2)
         self.layer2 = nn.Conv2d(36, 36, 3, stride=2, dilation=2)
         self.layer3 = nn.Conv2d(36, 36, 3, stride=2, dilation=2)
@@ -531,7 +543,7 @@ class Conv3(nn.Module):
 
 
 # just to test the kernel hypothesis
-class BackboneKernel(nn.Module):
+class BackboneKernel(pl.LightningModule):
     def __init__(
         self,
         input_dim: int,
@@ -539,7 +551,7 @@ class BackboneKernel(nn.Module):
         num_layers: int,
         hidden_dim: int,
         flatten: bool = False,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -554,7 +566,7 @@ class BackboneKernel(nn.Module):
         modules = [nn.Linear(self.input_dim, self.hidden_dim), nn.ReLU()]
         if self.flatten:
             modules = [nn.Flatten()] + modules
-        for i in range(self.num_layers - 1):
+        for _ in range(self.num_layers - 1):
             modules.append(nn.Linear(self.hidden_dim, self.hidden_dim))
             modules.append(nn.ReLU())
         modules.append(nn.Linear(self.hidden_dim, self.output_dim))
@@ -562,7 +574,7 @@ class BackboneKernel(nn.Module):
         model = nn.Sequential(*modules)
         return model
 
-    def forward(self, x, **params):
+    def forward(self, x, **_params):
         r"""
         Computes the covariance between x1 and x2.
         This method should be imlemented by all Kernel subclasses.
@@ -592,9 +604,9 @@ class BackboneKernel(nn.Module):
         return out
 
 
-class ConvNet4WithKernel(nn.Module):
+class ConvNet4WithKernel(pl.LightningModule):
     def __init__(self):
-        super(ConvNet4WithKernel, self).__init__()
+        super().__init__()
         conv_out_size = 1600
         hn_kernel_layers_no = 4
         hn_kernel_hidden_dim = 64
@@ -614,9 +626,9 @@ class ConvNet4WithKernel(nn.Module):
         return out
 
 
-class ResNet10WithKernel(nn.Module):
+class ResNet10WithKernel(pl.LightningModule):
     def __init__(self):
-        super(ResNet10WithKernel, self).__init__()
+        super().__init__()
         conv_out_size = None
         hn_kernel_layers_no = None
         hn_kernel_hidden_dim = None
@@ -668,22 +680,21 @@ def ResNet10(flatten=True):
     return ResNet(SimpleBlock, [1, 1, 1, 1], [64, 128, 256, 512], flatten)
 
 
-def ResNet12(flatten=True):
-    from learn2learn.vision.models import resnet12
+# def ResNet12(flatten=True):
+# from learn2learn.vision.models import resnet12
+#     class R12(pl.LightningModule):
+#         def __init__(self):
+#             super().__init__()
+#             self.model = resnet12.ResNet12Backbone()
+#             self.avgpool = nn.AvgPool2d(14)
+#             self.flat = nn.Flatten()
+#             self.final_feat_dim = 640  # 640
 
-    class R12(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.model = resnet12.ResNet12Backbone()
-            self.avgpool = nn.AvgPool2d(14)
-            self.flat = nn.Flatten()
-            self.final_feat_dim = 640  # 640
+#         def forward(self, x):
+#             x = self.model(x)
+#             return x
 
-        def forward(self, x):
-            x = self.model(x)
-            return x
-
-    return R12()
+#     return R12()
 
 
 def ResNet18(flatten=True):
