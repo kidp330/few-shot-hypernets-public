@@ -4,16 +4,18 @@ import numpy as np
 import torch
 from torch import nn as nn
 from torch.nn import functional as F
+import pytorch_lightning as pl
 
+from methods.meta_template import MetaTemplate
 import backbone
-from backbone import device
-from methods.hypernets.hypermaml import HyperMAML
-from methods.hypernets.utils import (get_param_dict,
-                                     kl_diag_gauss_with_standard_gauss,
-                                     reparameterize) # __jm__ configure black and isort to use the same schema
+from methods.hypernets.utils import (
+    get_param_dict,
+    kl_diag_gauss_with_standard_gauss,
+    reparameterize,
+)  # __jm__ configure black and isort to use the same schema
 
 
-class BHyperNet(nn.Module):
+class BHyperNet(pl.LightningModule):
     """bayesian hypernetwork for target network params"""
 
     def __init__(
@@ -46,16 +48,25 @@ class BHyperNet(nn.Module):
         return out_mean, out_logvar
 
 
-class BayesHMAML(HyperMAML):
+class BayesHMAML(MetaTemplate):
     def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
         super().__init__(
-            model_func, n_way, n_support, n_query, approx=approx, params=params
+            model_func, n_way, n_support, n_query  # , approx=approx, params=params
         )
+        self.n_query = n_query
         # loss function component
         self.loss_kld = kl_diag_gauss_with_standard_gauss  # Kullback–Leibler divergence
         self.kl_scale = params.kl_scale
         self.kl_step = None  # increase step for share of kld in loss
         self.kl_stop_val = params.kl_stop_val
+
+        # __jm__ not defined here - either don't contribute to state or were missed out
+        self.classifier = None  # __jm__ typehint later
+        self.target_net_param_shapes: dict[str, torch.Size]
+        self.hypernet_heads = nn.ModuleDict()
+
+        self.delta_list = []
+        self.alpha = 0
 
         # num of weight set draws for softvoting
         self.weight_set_num_train = params.hm_weight_set_num_train  # train phase
@@ -258,7 +269,7 @@ class BayesHMAML(HyperMAML):
                     fast_parameters + clf_fast_parameters
                 )  # __jm__ whyyyy are you adding them together
 
-                for task_step in range(self.task_update_num):
+                for _task_step in range(self.task_update_num):
                     scores = self.classifier(support_embeddings)
 
                     set_loss = self.loss_fn(scores, support_data_labels)
@@ -313,7 +324,7 @@ class BayesHMAML(HyperMAML):
                 self._update_weight(weight, update_mean, logvar, train_stage)
 
     def _get_list_of_delta_params(
-        self, maml_warmup_used, support_embeddings, support_data_labels
+        self, _maml_warmup_used, support_embeddings, support_data_labels
     ):
         # if not maml_warmup_used:
 
@@ -344,19 +355,17 @@ class BayesHMAML(HyperMAML):
     def set_forward_loss(self, x):
         """Adapt and forward using x. Return scores and total losses"""
         scores, total_delta_sum = self.set_forward(
-            x, is_feature=False, train_stage=True
+            x, is_feature=False  # , train_stage=True
         )
 
         # calc_sigma = calc_sigma and (self.epoch == self.stop_epoch - 1 or self.epoch % 100 == 0)
         # sigma, mu = self._mu_sigma(calc_sigma)
 
-        query_data_labels = torch.from_numpy(
-            np.repeat(range(self.n_way), self.n_query)
-        ).to(device())
+        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
         if self.hm_support_set_loss:
-            support_data_labels = torch.from_numpy(
-                np.repeat(range(self.n_way), self.n_support)
-            ).to(device())
+            support_data_labels = torch.repeat_interleave(
+                range(self.n_way), self.n_support
+            )
             query_data_labels = torch.cat((support_data_labels, query_data_labels))
 
         reduction = self.kl_scale
@@ -365,7 +374,7 @@ class BayesHMAML(HyperMAML):
 
         loss_kld = torch.zeros_like(loss_ce)
 
-        for name, weight in self.classifier.named_parameters():
+        for _name, weight in self.classifier.named_parameters():
             if weight.mu is not None and weight.logvar is not None:
                 val = self.loss_kld(weight.mu, weight.logvar)
                 # loss_kld = loss_kld + self.kl_w * reduction * val
@@ -376,7 +385,7 @@ class BayesHMAML(HyperMAML):
         if self.hm_lambda != 0:
             loss = loss + self.hm_lambda * total_delta_sum
 
-        topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
+        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
         topk_ind = topk_labels.cpu().numpy().flatten()
         y_labels = query_data_labels.cpu().numpy()
         top1_correct = np.sum(topk_ind == y_labels)
@@ -387,11 +396,9 @@ class BayesHMAML(HyperMAML):
     def set_forward_loss_with_adaptation(self, x):
         """returns loss and accuracy from adapted model (copy)"""
         scores, _ = self.set_forward(
-            x, is_feature=False, train_stage=False
+            x, is_feature=False  # , train_stage=False
         )  # scores from adapted copy
-        support_data_labels = torch.from_numpy(
-            np.repeat(range(self.n_way), self.n_support)
-        ).to(device())
+        support_data_labels = torch.repeat_interleave(range(self.n_way), self.n_support)
 
         reduction = self.kl_scale
 
@@ -399,7 +406,7 @@ class BayesHMAML(HyperMAML):
 
         loss_kld = torch.zeros_like(loss_ce)
 
-        for name, weight in self.classifier.named_parameters():
+        for _name, weight in self.classifier.named_parameters():
             if weight.mu is not None and weight.logvar is not None:
                 # loss_kld = loss_kld + self.kl_w * reduction * self.loss_kld(weight.mu, weight.logvar)
                 loss_kld = loss_kld + reduction * self.loss_kld(
@@ -408,7 +415,7 @@ class BayesHMAML(HyperMAML):
 
         loss = loss_ce + loss_kld
 
-        topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
+        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
         topk_ind = topk_labels.cpu().numpy().flatten()
         y_labels = support_data_labels.cpu().numpy()
         top1_correct = np.sum(topk_ind == y_labels)
@@ -416,7 +423,7 @@ class BayesHMAML(HyperMAML):
 
         return loss, task_accuracy
 
-    def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
+    def train_loop(self, _epoch, train_loader, optimizer):  # overwrite parrent function
         print_freq = 10
         avg_loss = 0
         task_count = 0
@@ -427,12 +434,10 @@ class BayesHMAML(HyperMAML):
         acc_all = []
         optimizer.zero_grad()
 
-        self.delta_list = []
-
         # train
         for i, (x, _) in enumerate(train_loader):
             self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML do not support way change"
+            assert self.n_way == x.size(0), "MAML does not support way change"
 
             loss, loss_ce, loss_kld, task_accuracy = self.set_forward_loss(x)
             avg_loss = avg_loss + loss.item()  # .data[0]

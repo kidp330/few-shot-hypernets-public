@@ -7,14 +7,11 @@ import torch
 from torch import nn
 
 import backbone
-from backbone import device
 from methods.meta_template import MetaTemplate
 
 
 class MAML(MetaTemplate):
-    def __init__(
-        self, model_func, n_way, n_support, n_query, params, approx=False
-    ):
+    def __init__(self, model_func, n_way, n_support, _n_query, params, approx=False):
         super().__init__(model_func, n_way, n_support, change_way=False)
 
         self.loss_fn = nn.CrossEntropyLoss()
@@ -35,7 +32,6 @@ class MAML(MetaTemplate):
 
     def set_forward(self, x, is_feature=False):
         assert is_feature is False, "MAML does not support fixed feature"
-        x = x.to(device())
         x_a_i = (
             x[:, : self.n_support, :, :, :]
             .contiguous()
@@ -46,8 +42,8 @@ class MAML(MetaTemplate):
             .contiguous()
             .view(self.n_way * self.n_query, *x.size()[2:])
         )  # query data
-        y_a_i = torch.from_numpy(np.repeat(range(self.n_way), self.n_support)).to(
-            device()
+        y_a_i = torch.repeat_interleave(
+            range(self.n_way), self.n_support
         )  # label for support data
 
         if self.maml_adapt_classifier:
@@ -101,9 +97,7 @@ class MAML(MetaTemplate):
 
     def set_forward_loss(self, x):
         scores = self.set_forward(x, is_feature=False)
-        query_data_labels = torch.from_numpy(
-            np.repeat(range(self.n_way), self.n_query)
-        ).to(device())
+        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
         loss = self.loss_fn(scores, query_data_labels)
 
         _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
@@ -159,8 +153,8 @@ class MAML(MetaTemplate):
     def test_loop(
         self, test_loader, return_std=False, return_time: bool = False
     ):  # overwrite parrent function
-        correct = 0
-        count = 0
+        _correct = 0
+        _count = 0
         acc_all = []
         eval_time = 0
         iter_num = len(test_loader)

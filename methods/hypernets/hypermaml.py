@@ -7,24 +7,27 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
+import pytorch_lightning as pl
+
 import backbone
-from backbone import device
+from io_utils import ParamHolder
 from methods.hypernets.utils import accuracy_from_scores, get_param_dict
-from methods.maml import MAML
+from methods.meta_template import MetaTemplate
 
 
-class HyperNet(nn.Module):
+class HyperNet(pl.LightningModule):
+    # __jm__ figure out why arguments were placed but unused
     def __init__(
-        self, hn_hidden_size, n_way, embedding_size, feat_dim, out_neurons, params
+        self, hn_hidden_size, _n_way, embedding_size, _feature_dim, out_neurons, params
     ):
-        super(HyperNet, self).__init__()
+        super().__init__()
 
         self.hn_head_len = params.hn_head_len
 
         head = [nn.Linear(embedding_size, hn_hidden_size), nn.ReLU()]
 
         if self.hn_head_len > 2:
-            for i in range(self.hn_head_len - 2):
+            for _ in range(self.hn_head_len - 2):
                 head.append(nn.Linear(hn_hidden_size, hn_hidden_size))
                 head.append(nn.ReLU())
 
@@ -40,11 +43,17 @@ class HyperNet(nn.Module):
         return out
 
 
-class HyperMAML(MAML):
-    def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
-        super(HyperMAML, self).__init__(
-            model_func, n_way, n_support, n_query, params=params
-        )
+class HyperMAML(MetaTemplate):
+    def __init__(
+        self,
+        model_func,
+        n_way: int,
+        n_support: int,
+        _n_query: int,
+        params: ParamHolder,
+        approx=False,
+    ):
+        super().__init__(model_func, n_way, n_support, change_way=True)
         self.loss_fn = nn.CrossEntropyLoss()
 
         self.hn_tn_hidden_size = params.hn_tn_hidden_size
@@ -79,6 +88,7 @@ class HyperMAML(MAML):
         self.hn_val_epochs = params.hn_val_epochs
         self.hn_val_optim = params.hn_val_optim
 
+        self.delta_list = []
         self.alpha = 0
         self.hn_alpha_step = params.hn_alpha_step
 
@@ -151,7 +161,7 @@ class HyperMAML(MAML):
                 if self.hm_use_class_batch_input
                 else param.numel()
             )
-            head_modules = []
+            _head_modules = []
 
             self.hypernet_heads[name] = HyperNet(
                 self.hn_hidden_size,
@@ -181,16 +191,16 @@ class HyperMAML(MAML):
                 upper = (i + 1) * self.n_support
                 new_embeddings[i] = embeddings[lower:upper, :].mean(dim=0)
 
-            return new_embeddings.to(device())
+            return new_embeddings
 
         return embeddings
 
     def get_support_data_labels(self):
-        return torch.from_numpy(
-            np.repeat(range(self.n_way), self.n_support)
-        ).to(device())  # labels for support data
+        return torch.repeat_interleave(
+            range(self.n_way), self.n_support
+        )  # labels for support data
 
-    def get_hn_delta_params(self, support_embeddings):
+    def get_hn_delta_params(self, support_embeddings: torch.Tensor):
         if self.hm_detach_before_hyper_net:
             support_embeddings = support_embeddings.detach()
 
@@ -265,7 +275,7 @@ class HyperMAML(MAML):
         delta_params_list,
         support_embeddings,
         support_data_labels,
-        train_stage=False,
+        _train_stage=False,
     ):
         if self.hm_maml_warmup and not self.single_test:
             p = self._get_p_value()
@@ -286,7 +296,7 @@ class HyperMAML(MAML):
                 self.classifier.zero_grad()
                 fast_parameters = fast_parameters + clf_fast_parameters
 
-                for task_step in range(self.task_update_num):
+                for _task_step in range(self.task_update_num):
                     scores = self.classifier(support_embeddings)
 
                     set_loss = self.loss_fn(scores, support_data_labels)
@@ -360,10 +370,7 @@ class HyperMAML(MAML):
                 self.delta_list = [{"delta_params": delta_params}]
 
             return delta_params
-        return [
-            torch.zeros(*i).to(device())
-            for (_, i) in self.target_net_param_shapes.items()
-        ]
+        return [torch.zeros(*i) for (_, i) in self.target_net_param_shapes.items()]
 
     def forward(self, x):
         out = self.feature.forward(x)
@@ -380,9 +387,8 @@ class HyperMAML(MAML):
         3. Forward with query data.
         4. Return scores"""
 
-        assert is_feature == False, "MAML do not support fixed feature"
+        assert is_feature == False, "MAML does not support fixed feature"
 
-        x = x.to(device())
         support_data = (
             x[:, : self.n_support, :, :, :]
             .contiguous()
@@ -426,13 +432,14 @@ class HyperMAML(MAML):
             # sum of delta params for regularization
             if self.hm_lambda != 0:
                 total_delta_sum = sum(
-                    [delta_params.pow(2.0).sum() for delta_params in delta_params_list]
+                    delta_params.pow(2.0).sum() for delta_params in delta_params_list
                 )
 
                 return scores, total_delta_sum
             else:
                 return scores, None
 
+    # __jm__ this needs to be removed
     def set_forward_adaptation(self, x, is_feature=False):  # overwrite parrent function
         raise ValueError(
             "MAML performs further adapation simply by increasing task_upate_num"
@@ -442,12 +449,12 @@ class HyperMAML(MAML):
         scores, total_delta_sum = self.set_forward(
             x, is_feature=False, train_stage=True
         )
-        query_data_labels = torch.from_numpy(np.repeat(range(self.n_way), self.n_query)).to(device())
+        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
 
         if self.hm_support_set_loss:
-            support_data_labels = torch.from_numpy(
-                np.repeat(range(self.n_way), self.n_support)
-            ).to(device())
+            support_data_labels = torch.repeat_interleave(
+                range(self.n_way), self.n_support
+            )
             query_data_labels = torch.cat((support_data_labels, query_data_labels))
 
         loss = self.loss_fn(scores, query_data_labels)
@@ -455,7 +462,7 @@ class HyperMAML(MAML):
         if self.hm_lambda != 0:
             loss = loss + self.hm_lambda * total_delta_sum
 
-        topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
+        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
         topk_ind = topk_labels.cpu().numpy().flatten()
         y_labels = query_data_labels.cpu().numpy()
         top1_correct = np.sum(topk_ind == y_labels)
@@ -465,11 +472,13 @@ class HyperMAML(MAML):
 
     def set_forward_loss_with_adaptation(self, x):
         scores, _ = self.set_forward(x, is_feature=False, train_stage=False)
-        support_data_labels = torch.from_numpy(np.repeat(range(self.n_way), self.n_support)).to(device())
+        support_data_labels = torch.from_numpy(
+            torch.repeat_interleave(range(self.n_way), self.n_support)
+        )
 
         loss = self.loss_fn(scores, support_data_labels)
 
-        topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
+        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
         topk_ind = topk_labels.cpu().numpy().flatten()
         y_labels = support_data_labels.cpu().numpy()
         top1_correct = np.sum(topk_ind == y_labels)
@@ -477,7 +486,7 @@ class HyperMAML(MAML):
 
         return loss, task_accuracy
 
-    def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
+    def train_loop(self, _epoch, train_loader, optimizer):  # overwrite parrent function
         print_freq = 10
         avg_loss = 0
         task_count = 0
@@ -490,7 +499,7 @@ class HyperMAML(MAML):
         # train
         for i, (x, _) in enumerate(train_loader):
             self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML do not support way change"
+            assert self.n_way == x.size(0), "MAML does not support way change"
 
             loss, task_accuracy = self.set_forward_loss(x)
             avg_loss = avg_loss + loss.item()  # .data[0]
@@ -547,7 +556,7 @@ class HyperMAML(MAML):
         eval_time = 0
 
         if self.hm_set_forward_with_adaptation:
-            for i, (x, _) in enumerate(test_loader):
+            for _i, (x, _) in enumerate(test_loader):
                 self.n_query = x.size(1) - self.n_support
                 assert self.n_way == x.size(0), "MAML do not support way change"
                 s = time()
@@ -642,7 +651,7 @@ class HyperMAML(MAML):
         scores, _ = self.set_forward(x)
         y_query = np.repeat(range(self.n_way), self.n_query)
 
-        topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
+        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
         topk_ind = topk_labels.cpu().numpy()
         top1_correct = np.sum(topk_ind[:, 0] == y_query)
         return float(top1_correct), len(y_query)
