@@ -8,11 +8,6 @@ import torch.nn.functional as F
 from torch.nn.utils.weight_norm import WeightNorm
 import pytorch_lightning as pl
 
-
-def check_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 # Basic ResNet model
 
 
@@ -114,15 +109,24 @@ class BLinear_fw(Linear_fw):  # used in BHMAML to forward input with fast weight
 
 class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
     def __init__(
-        self, in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        bias=True,
+        device: torch.device = "cuda",
     ):
-        super(Conv2d_fw, self).__init__(
+        self.device = device
+        super().__init__(
             in_channels,
             out_channels,
             kernel_size,
             stride=stride,
             padding=padding,
             bias=bias,
+            device=device,
         )
         self.weight.fast = None
         if not self.bias is None:
@@ -152,14 +156,15 @@ class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
 
 
 class BatchNorm2d_fw(nn.BatchNorm2d):  # used in MAML to forward input with fast weight
-    def __init__(self, num_features, device: torch.device = check_device()):
-        super(BatchNorm2d_fw, self).__init__(num_features)
+    def __init__(self, num_features, device: torch.device = "cuda"):
+        self.device = device
+        super().__init__(num_features, device=device)
         self.weight.fast = None
         self.bias.fast = None
 
     def forward(self, x):
-        running_mean = torch.zeros(x.data.size()[1])
-        running_var = torch.ones(x.data.size()[1])
+        running_mean = torch.zeros(x.data.size()[1]).to(self.device)
+        running_var = torch.ones(x.data.size()[1]).to(self.device)
         if self.weight.fast is not None and self.bias.fast is not None:
             out = F.batch_norm(
                 x,

@@ -11,8 +11,8 @@ from methods.meta_template import MetaTemplate
 
 
 class MAML(MetaTemplate):
-    def __init__(self, model_func, n_way, n_support, _n_query, params, approx=False):
-        super().__init__(model_func, n_way, n_support, change_way=False)
+    def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
+        super().__init__(model_func, n_way, n_support, n_query, change_way=False)
 
         self.loss_fn = nn.CrossEntropyLoss()
         self.classifier = backbone.Linear_fw(self.feat_dim, n_way)
@@ -36,14 +36,16 @@ class MAML(MetaTemplate):
             x[:, : self.n_support, :, :, :]
             .contiguous()
             .view(self.n_way * self.n_support, *x.size()[2:])
+            .to(self.device)
         )  # support data
         x_b_i = (
             x[:, self.n_support :, :, :, :]
             .contiguous()
             .view(self.n_way * self.n_query, *x.size()[2:])
+            .to(self.device)
         )  # query data
-        y_a_i = torch.repeat_interleave(
-            range(self.n_way), self.n_support
+        y_a_i = torch.repeat_interleave(torch.arange(self.n_way), self.n_support).to(
+            self.device, dtype=torch.long
         )  # label for support data
 
         if self.maml_adapt_classifier:
@@ -59,7 +61,7 @@ class MAML(MetaTemplate):
 
         self.zero_grad()
 
-        for _task_step in list(range(self.task_update_num)):
+        for _task_step in range(self.task_update_num):
             scores = self.forward(x_a_i)
             set_loss = self.loss_fn(scores, y_a_i)
             grad = torch.autograd.grad(
@@ -97,16 +99,18 @@ class MAML(MetaTemplate):
 
     def set_forward_loss(self, x):
         scores = self.set_forward(x, is_feature=False)
-        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
+        query_data_labels = torch.repeat_interleave(
+            torch.arange(self.n_way), self.n_query
+        ).to(self.device, dtype=torch.long)
         loss = self.loss_fn(scores, query_data_labels)
 
         _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
-        topk_ind = topk_labels.cpu().numpy().flatten()
-        y_labels = query_data_labels.cpu().numpy()
-        top1_correct = np.sum(topk_ind == y_labels)
+        topk_ind = topk_labels.flatten()
+        y_labels = query_data_labels
+        top1_correct = torch.sum(topk_ind == y_labels)
         task_accuracy = (top1_correct / len(query_data_labels)) * 100
 
-        return loss, task_accuracy
+        return dict(loss=loss, task_accuracy=task_accuracy)
 
     def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
         print_freq = 10
@@ -158,7 +162,7 @@ class MAML(MetaTemplate):
         acc_all = []
         eval_time = 0
         iter_num = len(test_loader)
-        for i, (x, _) in enumerate(test_loader):
+        for _i, (x, _) in enumerate(test_loader):
             self.n_query = x.size(1) - self.n_support
             assert self.n_way == x.size(0), "MAML do not support way change"
             s = time()
@@ -186,6 +190,7 @@ class MAML(MetaTemplate):
 
         return ret
 
+    # used in regression
     def get_logits(self, x):
         self.n_query = x.size(1) - self.n_support
         logits = self.set_forward(x)

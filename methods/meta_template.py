@@ -1,8 +1,11 @@
 from abc import abstractmethod
-from typing import Tuple
-
+from collections import namedtuple
+from math import prod
+from typing import Any, Tuple
 
 import torch
+from torch.utils.data import DataLoader
+
 import pytorch_lightning as pl
 
 
@@ -35,50 +38,62 @@ class MetaTemplate(pl.LightningModule):
         pass
 
     @abstractmethod
-    def set_forward_loss(self, x):
+    def set_forward_loss(self, x) -> dict[str, any]:
+        # return {"loss": ..., ""}
         pass
 
     @abstractmethod
     def forward(self, x):
         pass
 
-    def test_change_way_violations(self):
-        try:
-            n_batch, x_size = self.trainer.dims
-        except AttributeError as e:
-            print("error: trainer object is missing dims attribute\n", e)
-            raise e
+    def get_few_shot_dimensions(self, dl: DataLoader):
+        X: torch.Tensor
+        X, _y = next(iter(dl))
+        n_classes, x_dims, *_ = X.shape
+        print(n_classes, x_dims)
+        return n_classes, x_dims
 
+    def test_change_way_violations(self, n_classes, x_dims):
         if self.n_way is None or self.change_way is True:
-            self.n_way = n_batch
-        assert self.n_way == n_batch
+            self.n_way = n_classes
+        assert self.n_way == n_classes
 
         if self.n_support is None:
-            assert self.n_query is not None and x_size >= self.n_query
-            self.n_support = x_size - self.n_query
-        elif self.n_query is None:
-            assert x_size >= self.n_support
-            self.n_query = x_size - self.n_support
-        else:
-            assert self.n_support + self.n_query == x_size
+            assert self.n_query is not None and x_dims >= self.n_query
+            self.n_support = x_dims - self.n_query
+        # elif self.n_query is None:
+        assert x_dims >= self.n_support
+        self.n_query = x_dims - self.n_support
+        # else:
+        #     assert self.n_support + self.n_query == x_dims
+
+    # @override pl.LightningModule
+    def configure_optimizers(self):
+        pass
 
     # @override pl.LightningModule
     def on_train_start(self):
         super().on_train_start()
-        self.test_change_way_violations()
+        self.test_change_way_violations(
+            *self.get_few_shot_dimensions(self.trainer.train_dataloader)
+        )
 
     # these are important - lightning turns off gradient in validation and test by default
     # @override pl.LightningModule
     def on_validation_start(self) -> None:
         super().on_validation_start()
         torch.set_grad_enabled(True)
-        self.test_change_way_violations()
+        self.test_change_way_violations(
+            *self.get_few_shot_dimensions(self.val_dataloader())
+        )
 
     # @override pl.LightningModule
     def on_test_start(self) -> None:
         super().on_test_start()
         torch.set_grad_enabled(True)
-        self.test_change_way_violations()
+        self.test_change_way_violations(
+            *self.get_few_shot_dimensions(self.trainer.test_dataloaders)
+        )
 
     def parse_feature(self, x, is_feature) -> Tuple[torch.Tensor, torch.Tensor]:
         if is_feature:
@@ -97,7 +112,7 @@ class MetaTemplate(pl.LightningModule):
     # __jm__ where's this being used
     def correct(self, x):
         scores = self.set_forward(x)
-        y_query = torch.repeat_interleave(range(self.n_way), self.n_query)
+        y_query = torch.repeat_interleave(torch.range(self.n_way), self.n_query)
 
         _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
         # topk_ind = topk_labels.cpu().numpy()
@@ -113,7 +128,7 @@ class MetaTemplate(pl.LightningModule):
 
     def test_step(self, batch, _batch_idx):
         x, _ = batch
-        y_query = torch.repeat_interleave(range(self.n_way), self.n_query)
+        y_query = torch.repeat_interleave(torch.range(self.n_way), self.n_query)
 
         metrics = {}
 
