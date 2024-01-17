@@ -1,11 +1,23 @@
 import argparse
-from enum import StrEnum, auto
 import glob
 import os
 import sys
 from pathlib import Path
-from typing import Literal, Optional
+from enum import StrEnum
+from typing import Literal
+
+import numpy as np
 import pytorch_lightning as pl
+
+import neptune
+from neptune.exceptions import NeptuneException
+from neptune import Run
+
+from io_params import Arg, ParamStruct, ParamHolder
+import backbone
+import configs
+import hn_args
+
 from methods.DKT import DKT
 from methods.baselinetrain import BaselineTrain
 from methods.hypernets.bayeshmaml import BayesHMAML
@@ -15,74 +27,6 @@ from methods.hypernets.hypernet_poc import HyperNetPOC, HypernetPPA
 from methods.maml import MAML
 from methods.matchingnet import MatchingNet
 from methods.protonet import ProtoNet
-import neptune
-from neptune.exceptions import NeptuneException
-
-import numpy as np
-from neptune import Run
-
-import backbone
-import configs
-import hn_args
-
-
-class Arg:
-    class Method(StrEnum):
-        baseline = auto()
-        baselinepp = "baseline++"
-        DKT = "DKT"
-        protonet = auto()
-        matchingnet = auto()
-        relationnet = auto()
-        relationnet_softmax = auto()
-        maml = auto()
-        maml_approx = auto()
-        hyper_maml = auto()
-        bayes_hmaml = auto()
-        hyper_shot = auto()
-        hn_ppa = auto()
-        hn_poc = auto()
-
-    class Model(StrEnum):
-        Conv4 = "Conv4"
-        Conv4Pool = "Conv4Pool"
-        Conv4S = "Conv4S"
-        Conv6 = "Conv6"
-        ResNet10 = "ResNet10"
-        ResNet18 = "ResNet18"
-        ResNet34 = "ResNet34"
-        ResNet50 = "ResNet50"
-        ResNet101 = "ResNet101"
-        Conv4WithKernel = "Conv4WithKernel"
-        ResNetWithKernel = "ResNetWithKernel"
-
-    class Dataset(StrEnum):
-        CUB = "CUB"
-        miniImagenet = auto()
-        cross = auto()
-        omniglot = auto()
-        # emnist = auto()
-        cross_char = auto()
-
-    class Optim(StrEnum):
-        adam = auto()
-        sgd = auto()
-
-    class Scheduler(StrEnum):
-        none = auto()
-        multisteplr = auto()
-        cosine = auto()
-        reducelronplateau = auto()
-
-    class Split(StrEnum):
-        novel = auto()
-        base = auto()
-        val = auto()
-
-    @classmethod
-    def list(_self, cls) -> list[str]:
-        return list(map(lambda c: c.value, cls))
-
 
 model_dict: dict[str, pl.LightningModule] = {
     Arg.Model.Conv4: backbone.Conv4,
@@ -114,220 +58,94 @@ method_dict: dict[str, pl.LightningModule] = {
 }
 
 
-class ParamStruct:
-    seed: int = 0
-    "Seed for Numpy and pyTorch."
-
-    dataset = Arg.Dataset.CUB
-    "The dataset used for training the model. Refer to Arg.Dataset for allowed values"
-
-    model = Arg.Model.Conv4
-    "The model used for prediction. Refer to Arg.Model for allowed values"
-    # 50 and 101 are not used in the paper
-
-    method = Arg.Method.baseline
-    "The method utilized in conjunction with the model. Refer to Arg.Method for allowed values"
-    # relationnet_softmax replace L2 norm with softmax to expedite training, maml_approx use first-order approximation in the gradient for efficiency
-
-    train_n_way = 5
-    "Class num to classify for training"
-    # baseline and baseline++ ignore this parameter
-
-    test_n_way = 5
-    "Class num to classify for testing (validation)"
-    # baseline and baseline++ ignore this parameter
-
-    n_shot = 5
-    "Number of labeled data in each class, same as n_support"
-    # baseline and baseline++ only use this parameter in finetuning
-
-    train_aug = False
-    "Whether to perform data augmentation during training"
-
-    checkpoint_suffix = ""
-    "Suffix for custom experiment differentiation"
-    # saved in save/checkpoints/[dataset]
-
-    lr = 1e-3
-    "Learning rate"
-
-    optim = Arg.Optim.adam
-    "Optimizer"
-
-    n_val_perms = 1
-    "Number of task permutations in evaluation."
-
-    lr_scheduler = Arg.Scheduler.none
-    "LR scheduler"
-
-    milestones: Optional[list[int]] = None
-    "Milestones for multisteplr"
-
-    maml_save_feature_network = False
-    "Whether to save feature net used in MAML"
-
-    maml_adapt_classifier = False
-    "Adapt only the classifier during second gradient calculation"
-
-    evaluate_model = False
-    "Skip train phase and perform final test"
-
-    # region train
-
-    num_classes = 200
-    "Total number of classes in softmax, only used in baseline"
-    # make it larger than the maximum label value in base class
-
-    save_freq = 500
-    "Save frequency"
-
-    start_epoch = 0
-    "Starting epoch"
-
-    stop_epoch: Optional[int] = None
-    "Stopping epoch"
-    # for meta-learning methods, each epoch contains 100 episodes. The default epoch number is dataset dependent. See train.py
-
-    resume = False
-    "Continue from previous trained model with largest epoch"
-
-    warmup = False
-    "Continue from baseline, neglected if resume is true"
-    # never used in the paper
-
-    es_epoch = 250
-    "Check if val accuracy threshold achieved at this epoch, stop if not."
-
-    es_threshold: float = 50.0
-    "Validation accuracy threshold for early stopping."
-
-    eval_freq = 1
-    "Evaluation frequency"
-
-    # endregion
-
-    split = Arg.Split.novel
-    "Split dataset into /base/val/novel/"
-    # default novel, but you can also test base/val class accuracy if you want
-
-    save_iter: Optional[int] = None
-    "save feature from the model trained in x epoch, use the best model if x is None"
-
-    adaptation = False
-    "Further adaptation in test time or not"
-
-    repeat = 5
-    "Repeat the test N times with different seeds and take the mean. The seeds range is [seed, seed+repeat]"
-
-    n_query: int | None = None
-    "This parameter is computed at runtime based on n_way"
-
-
-class ParamHolder:
-    def __init__(self, params):
-        super().__init__()
-        self.params: ParamStruct = params
-        self.history = set()
-
-    def __getattr__(self, item):
-        it = getattr(self.params, item)
-        if item not in self.history:
-            print("Getting", item, "=", it)
-            self.history.add(item)
-        return it
-
-    def get_ignored_args(self):
-        return sorted([k for k in vars(self.params).keys() if k not in self.history])
-
-
 def parse_args(script: Literal["train", "test", "save_features"]):
-    parser = argparse.ArgumentParser(
-        description=f"few-shot script {script}",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+    pass  # TAP doesn't validate arg to script mapping, TODO __jm__
+    # parser = argparse.ArgumentParser(
+    #     description=f"few-shot script {script}",
+    #     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    # )
+    # def add_argument(attr: str):
+    #     attr_str = attr
+    #     attr = getattr(ParamStruct, attr)
+    #     if attr_str == "stop_epoch":
+    #         print(attr)
+    #     kwargs = {
+    #         "default": attr,
+    #         "help": attr.__doc__,
+    #     }
+    #     attr_type = type(attr)
+    #     if attr is not None and (attr_type in [int, float] or callable(attr_type)):
+    #         kwargs["type"] = attr_type
+    #     else:
+    #         kwargs["type"] = str
+    #     if attr_type is bool:
+    #         kwargs["action"] = "store_true"
+    #         del kwargs["type"]
+    #     elif attr_str in ["milestones"]:
+    #         kwargs["nargs"] = "+"
+    #         kwargs["type"] = int
+    #     elif isinstance(attr, StrEnum):
+    #         kwargs["choices"] = Arg.list(attr_type)  # __jm__ probably not gonna work
 
-    def add_argument(attr: str):
-        attr_str = attr
-        attr = getattr(ParamStruct, attr)
-        kwargs = {
-            "default": attr,
-            "type": type(attr),
-            "help": attr.__doc__,
-        }
-        if type(attr) is bool:
-            kwargs["action"] = "store_true"
-        elif attr_str in ["milestones"]:
-            kwargs["nargs"] = "+"
-            kwargs["type"] = int
-        elif isinstance(StrEnum, attr):
-            kwargs["choices"] = Arg.list(type(attr))  # __jm__ probably not gonna work
+    #     if attr_str == "stop_epoch":
+    #         print(attr_str, kwargs)
 
-        print(attr_str, kwargs)
+    #     parser.add_argument(f"--{attr_str}", **kwargs)
 
-        parser.add_argument(f"--{attr_str}", kwargs=kwargs)
+    # for arg in [
+    #     "seed",
+    #     "dataset",
+    #     "model",
+    #     "method",
+    #     "train_n_way",
+    #     "test_n_way",
+    #     "n_shot",
+    #     "train_aug",
+    #     "checkpoint_suffix",
+    #     "lr",
+    #     "optim",
+    #     "n_val_perms",
+    #     "lr_scheduler",
+    #     "milestones",
+    #     "maml_save_feature_network",
+    #     "maml_adapt_classifier",
+    #     "evaluate_model",
+    # ]:
+    #     add_argument(arg)
 
-    map(
-        add_argument,
-        [
-            "seed",
-            "dataset",
-            "model",
-            "method",
-            "train_n_way",
-            "test_n_way",
-            "n_shot",
-            "train_aug",
-            "checkpoint_suffix",
-            "lr",
-            "optim",
-            "n_val_perms",
-            "lr_scheduler",
-            "milestones",
-            "maml_save_feature_network",
-            "maml_adapt_classifier",
-            "evaluate_model",
-        ],
-    )
+    # if script == "train":
+    #     for arg in [
+    #         "num_classes",
+    #         "save_freq",
+    #         "start_epoch",
+    #         "stop_epoch",
+    #         "resume",
+    #         "warmup",
+    #         "es_epoch",
+    #         "es_threshold",
+    #         "eval_freq",
+    #     ]:
+    #         add_argument(arg)
 
-    if script == "train":
-        map(
-            add_argument,
-            [
-                "num_classes",
-                "save_freq",
-                "start_epoch",
-                "stop_epoch",
-                "resume",
-                "warmup",
-                "es_epoch",
-                "es_threshold",
-                "eval_freq",
-            ],
-        )
+    # elif script == "save_features":
+    #     for arg in [
+    #         "split",
+    #         "save_iter",
+    #     ]:
+    #         add_argument(arg)
 
-    elif script == "save_features":
-        map(
-            add_argument,
-            [
-                "split",
-                "save_iter",
-            ],
-        )
-    elif script == "test":
-        map(
-            add_argument,
-            [
-                "split",
-                "save_iter",
-                "adaptation",
-                "repeat",
-            ],
-        )
-    else:
-        raise ValueError("Unknown script")
+    # elif script == "test":
+    #     for arg in [
+    #         "split",
+    #         "save_iter",
+    #         "adaptation",
+    #         "repeat",
+    #     ]:
+    #         add_argument(arg)
+    # else:
+    #     raise ValueError("Unknown script")
 
-    parser = hn_args.add_hn_args_to_parser(parser)
-    return ParamHolder(parser.parse_args())
+    # parser = hn_args.add_hn_args_to_parser(parser)
 
 
 # __jm__ leave this for later
@@ -395,8 +213,7 @@ def get_best_file(checkpoint_dir):
     best_file = os.path.join(checkpoint_dir, "best_model.tar")
     if os.path.isfile(best_file):
         return best_file
-    else:
-        return get_resume_file(checkpoint_dir)
+    return get_resume_file(checkpoint_dir)
 
 
 def setup_neptune(params) -> Run | None:
@@ -423,7 +240,7 @@ def setup_neptune(params) -> Run | None:
         with run_file.open("w") as f:
             f.write(run["sys/id"].fetch())
             print("Starting neptune run", run["sys/id"].fetch())
-        run["params"] = vars(params.params)
+        run["params"] = params.as_dict()
         run["cmd"] = f"python {' '.join(sys.argv)}"
         return run
 
