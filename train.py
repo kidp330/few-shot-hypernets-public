@@ -1,3 +1,4 @@
+from enum import unique
 import json
 import sys
 
@@ -28,7 +29,6 @@ from io_utils import (
     ParamStruct,
     model_dict,
     method_dict,
-    parse_args,
     get_resume_file,
     setup_neptune,
     ParamHolder,
@@ -87,9 +87,13 @@ def train(
         )
     scheduler = get_scheduler(params, optimizer, stop_epoch)
 
-    class ConfigureOptimizers(pl.Callback):
-        def configure_optimizers(self):
-            return {"optimizer": optimizer, "lr_scheduler": scheduler}
+    # class ConfigureOptimizers(pl.Callback):
+    #     def configure_optimizers(self):
+    #         return {"optimizer": optimizer, "lr_scheduler": scheduler}
+    model.configure_optimizers = lambda: {
+        "optimizer": optimizer,
+        "lr_scheduler": scheduler,
+    }
 
     if not os.path.isdir(params.checkpoint_dir):
         os.makedirs(
@@ -102,7 +106,6 @@ def train(
 
     trainer = pl.Trainer(
         logger=loggers,
-        callbacks=ConfigureOptimizers(),
         max_epochs=stop_epoch,
         # deterministc=,
         # benchmark=,
@@ -353,7 +356,7 @@ def get_train_val_dataloaders(
 
     base_file, val_file = train_val_files
 
-    base_datamgr, val_datamgr = get_datamgrs_callback(image_size, train_val_files)
+    base_datamgr, val_datamgr = get_datamgrs_callback(image_size)
 
     base_loader = base_datamgr.get_data_loader(base_file, aug=params.train_aug)
     val_loader = val_datamgr.get_data_loader(val_file, aug=False)
@@ -467,7 +470,7 @@ def setup_adaptive_model(
         backbone.SimpleBlock.maml = True
         backbone.BottleneckBlock.maml = True
         backbone.ResNet.maml = True
-        model = MAML(
+        model = method_dict[params.method](
             model_dict[params.model],
             params=params,
             approx=(params.method == "maml_approx"),
@@ -511,7 +514,8 @@ def setup_adaptive(params: ParamHolder) -> tuple[MetaTemplate, DataLoader, DataL
 
 
 def main():
-    params = parse_args("train")
+    # params = parse_args("train")
+    params = ParamHolder().parse_args()
     _set_seed(params.seed)
 
     if params.dataset in ["omniglot", "cross_char"]:
@@ -528,6 +532,15 @@ def main():
         model, base_loader, val_loader = setup_baseline(params)
     else:
         model, base_loader, val_loader = setup_adaptive(params)
+
+    # __jm__ off by one batch size?
+    # print(f"{len(base_loader)=}")
+    # for b in base_loader:
+    #     print(f"{len(b)=}")
+    #     print(f"{b[0].shape=}")
+    #     print(f"{b[1].shape=}")
+    #     return
+    print({b[0].shape for b in base_loader})
 
     params.checkpoint_dir = f"{configs.save_dir}/checkpoints/{params.dataset}/{params.model}_{params.method}"
 
@@ -574,7 +587,7 @@ def main():
         else:
             raise ValueError("No warm_up file")
 
-    args_dict = vars(params.params)
+    args_dict = params.as_dict()
     with (Path(params.checkpoint_dir) / "args.json").open("w") as f:
         json.dump(
             {

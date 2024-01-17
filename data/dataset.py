@@ -1,11 +1,14 @@
 # This code is modified from https://github.com/facebookresearch/low-shot-shrink-hallucinate
 
+from collections import defaultdict
 import torch
 from PIL import Image
 import json
 import numpy as np
 import torchvision.transforms as transforms
 import os
+
+from torch.utils.data import Dataset, DataLoader
 
 identity = lambda x: x
 
@@ -28,17 +31,14 @@ class SimpleDataset:
         return len(self.meta["image_names"])
 
 
-class SetDataset:
+class SetDataset(Dataset):
     def __init__(self, data_file, batch_size, transform):
         with open(data_file, "r", encoding="utf-8") as f:
             self.meta = json.load(f)
 
         self.cl_list = np.unique(self.meta["image_labels"]).tolist()
 
-        self.sub_meta = {}
-        for cl in self.cl_list:
-            self.sub_meta[cl] = []
-
+        self.sub_meta = defaultdict(list)
         for x, y in zip(self.meta["image_names"], self.meta["image_labels"]):
             self.sub_meta[y].append(x)
 
@@ -50,20 +50,21 @@ class SetDataset:
             pin_memory=False,
         )
 
+        print({len(y) for y in self.sub_meta.values()})
         for cl in self.cl_list:
             sub_dataset = SubDataset(self.sub_meta[cl], cl, transform=transform)
             self.sub_dataloader.append(
-                torch.utils.data.DataLoader(sub_dataset, **sub_data_loader_params)
+                DataLoader(sub_dataset, **sub_data_loader_params)
             )
 
     def __getitem__(self, i):
         return next(iter(self.sub_dataloader[i]))
 
     def __len__(self):
-        return len(self.cl_list)
+        return len(self.cl_list)  # number of classes in dataset
 
 
-class SubDataset:
+class SubDataset(Dataset):
     def __init__(
         self, sub_meta, cl, transform=transforms.ToTensor(), target_transform=identity
     ):
@@ -94,5 +95,5 @@ class EpisodicBatchSampler:
         return self.n_episodes
 
     def __iter__(self):
-        for _i in range(self.n_episodes):
+        for _i in range(self.n_episodes):  # why is this iterable finite __jm__
             yield torch.randperm(self.n_classes)[: self.n_way]
