@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -u
 wget https://github.com/NanqingD/DAOSL/raw/master/data/emnist.zip 
 unzip emnist.zip
 python invert_emnist.py
