@@ -1,6 +1,7 @@
 from enum import StrEnum, auto
 from typing import Optional
 from tap import Tap
+from pathlib import Path
 
 
 class Arg:
@@ -65,14 +66,14 @@ class ParamStruct(Tap):
     seed: int = 0
     "Seed for Numpy and pyTorch."
 
-    dataset = Arg.Dataset.CUB
+    dataset: Optional[Arg.Dataset] = None
     "The dataset used for training the model. Refer to Arg.Dataset for allowed values"
 
     model = Arg.Model.Conv4
     "The model used for prediction. Refer to Arg.Model for allowed values"
     # 50 and 101 are not used in the paper
 
-    method = Arg.Method.baseline
+    method: Optional[Arg.Method] = None
     "The method utilized in conjunction with the model. Refer to Arg.Method for allowed values"
     # relationnet_softmax replace L2 norm with softmax to expedite training, maml_approx use first-order approximation in the gradient for efficiency
 
@@ -91,17 +92,17 @@ class ParamStruct(Tap):
     train_aug = False
     "Whether to perform data augmentation during training"
 
-    checkpoint_suffix = ""
+    checkpoint_suffix: str = ""
     "Suffix for custom experiment differentiation"
     # saved in save/checkpoints/[dataset]
 
-    lr = 1e-3
+    lr: float = 1e-3
     "Learning rate"
 
     optim = Arg.Optim.adam
     "Optimizer"
 
-    n_val_perms = 1
+    n_val_perms: int = 1
     "Number of task permutations in evaluation."
 
     lr_scheduler = Arg.Scheduler.none
@@ -121,24 +122,22 @@ class ParamStruct(Tap):
 
     # region train
 
-    num_classes = 200
+    num_classes: int = 200
     "Total number of classes in softmax, only used in baseline"
     # make it larger than the maximum label value in base class
 
-    save_freq = 500
+    save_freq: int = 500
     "Save frequency"
-
-    start_epoch = 0
-    "Starting epoch"
+    # TODO: pass to pl.Trainer without perhaps defining a custom callback
 
     stop_epoch: Optional[int] = None
     "Stopping epoch"
     # for meta-learning methods, each epoch contains 100 episodes. The default epoch number is dataset dependent. See train.py
 
-    resume = False
+    resume: bool = False
     "Continue from previous trained model with largest epoch"
 
-    warmup = False
+    warmup: bool = False
     "Continue from baseline, neglected if resume is true"
     # never used in the paper
 
@@ -167,7 +166,10 @@ class ParamStruct(Tap):
     "Repeat the test N times with different seeds and take the mean. The seeds range is [seed, seed+repeat]"
 
     n_query: Optional[int] = None
-    "This parameter is computed at runtime based on n_way"
+    "By default, this parameter is computed at runtime based on n_way"
+
+    args_file: Optional[Path] = None
+    "Path to a .json file specifying arguments of a previous run may be provided"
 
 
 class ParamHolder(ParamStruct):
@@ -182,5 +184,6 @@ class ParamHolder(ParamStruct):
             self.history.add(item)
         return it
 
+    # TODO: seems to be not working correctly after refactor
     def get_ignored_args(self) -> list[str]:
         return sorted([k for k in vars(self).keys() if k not in self.history])

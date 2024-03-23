@@ -1,22 +1,9 @@
-import argparse
-import glob
-import os
-import sys
-from pathlib import Path
-from enum import StrEnum
 from typing import Literal
 
-import numpy as np
 import pytorch_lightning as pl
 
-import neptune
-from neptune.exceptions import NeptuneException
-from neptune import Run
-
-from io_params import Arg, ParamStruct, ParamHolder
+from io_params import Arg
 import backbone
-import configs
-import hn_args
 
 from methods.DKT import DKT
 from methods.baselinetrain import BaselineTrain
@@ -187,63 +174,3 @@ def parse_args(script: Literal["train", "test", "save_features"]):
 #             "--n_test_epochs", default=10, type=int, help="How many test people?"
 #         )
 #     return parser.parse_args()
-
-
-def get_assigned_file(checkpoint_dir, num):
-    assign_file = os.path.join(checkpoint_dir, "{:d}.tar".format(num))
-    return assign_file
-
-
-def get_resume_file(checkpoint_dir):
-    filelist = glob.glob(os.path.join(checkpoint_dir, "*.tar"))
-    if len(filelist) == 0:
-        return None
-    last_model_files = [x for x in filelist if os.path.basename(x) == "last_model.tar"]
-    if len(last_model_files) == 1:
-        return last_model_files[0]
-
-    filelist = [x for x in filelist if os.path.basename(x) != "best_model.tar"]
-    epochs = np.array([int(os.path.splitext(os.path.basename(x))[0]) for x in filelist])
-    max_epoch = np.max(epochs)
-    resume_file = os.path.join(checkpoint_dir, "{:d}.tar".format(max_epoch))
-    return resume_file
-
-
-def get_best_file(checkpoint_dir):
-    best_file = os.path.join(checkpoint_dir, "best_model.tar")
-    if os.path.isfile(best_file):
-        return best_file
-    return get_resume_file(checkpoint_dir)
-
-
-def setup_neptune(params) -> Run | None:
-    run_name = (
-        Path(params.checkpoint_dir)
-        .relative_to(Path(configs.save_dir) / "checkpoints")
-        .name
-    )
-    run_file = Path(params.checkpoint_dir) / "NEPTUNE_RUN.txt"
-
-    run_id = None
-    if params.resume and run_file.exists():
-        with run_file.open("r") as f:
-            run_id = f.read()
-            print("Resuming neptune run", run_id)
-
-    try:
-        run = neptune.init_run(
-            name=run_name,
-            source_files="**/*.py",
-            tags=[params.checkpoint_suffix] if params.checkpoint_suffix != "" else [],
-            with_id=run_id,
-        )
-        with run_file.open("w") as f:
-            f.write(run["sys/id"].fetch())
-            print("Starting neptune run", run["sys/id"].fetch())
-        run["params"] = params.as_dict()
-        run["cmd"] = f"python {' '.join(sys.argv)}"
-        return run
-
-    except NeptuneException as e:
-        print("Cannot initialize neptune because of", e)
-        return None
