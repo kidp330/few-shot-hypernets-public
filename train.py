@@ -1,52 +1,28 @@
-from enum import unique
-import json
-import sys
 
-# from collections import defaultdict
-from typing import Callable
-
-import numpy as np
 import torch
 import random
-from methods.meta_template import MetaTemplate
-from neptune import Run
 import torch.optim
-from torch.optim import lr_scheduler
-from torch.utils.data import DataLoader
+import pytorch_lightning as pl
 import os
 
-import matplotlib.pyplot as plt
-
-
-import configs
-import backbone
-from data.datamgr import DataManager, SimpleDataManager, SetDataManager
-from methods.baselinetrain import BaselineTrain
-from methods.hypernets import hypernet_types
-from methods.relationnet import RelationNet
-from methods.maml import MAML
-from io_utils import (
-    ParamStruct,
-    model_dict,
-    method_dict,
-    get_resume_file,
-    setup_neptune,
-    ParamHolder,
-    Arg,
+import setup
+from persist import (
+    get_checkpoint_dir,
+    get_checkpoint_file,
+    save_run_params,
 )
 
-import pytorch_lightning as pl
-from pytorch_lightning.loggers.neptune import NeptuneLogger
-from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
-
-
-# from neptune.types import File
-
-# import matplotlib.pyplot as plt
 from pathlib import Path
+from torch.utils.data import DataLoader
 
-from save_features import do_save_fts
-from test import perform_test
+from io_utils import Arg
+from io_params import ParamHolder
+
+# TODO: remove these imports
+import numpy as np
+import matplotlib.pyplot as plt
+
+# from test import perform_test
 
 
 def _set_seed(seed, verbose=True):
@@ -64,63 +40,18 @@ def _set_seed(seed, verbose=True):
         if verbose:
             print("[INFO] Setting SEED: None")
 
+# def train_resume(checkpoint_path: os.PathLike, )
+
 
 def train(
+    model: pl.LightningModule,
     base_loader: DataLoader,
     val_loader: DataLoader,
-    model: pl.LightningModule,
-    optimization: str,
-    _start_epoch: int,
-    stop_epoch: int,
+    loggers: list[pl._logger],
+    checkpoint_file: os.PathLike,
     params: ParamHolder,
-    *,
-    neptune_run: Run | None = None,
 ):
-    print("Tot epochs: " + str(stop_epoch))
-    if optimization == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=params.lr)
-    elif optimization == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=params.lr)
-    else:
-        raise ValueError(
-            f"Unknown optimization {optimization}, please define by yourself"
-        )
-    scheduler = get_scheduler(params, optimizer, stop_epoch)
-
-    # class ConfigureOptimizers(pl.Callback):
-    #     def configure_optimizers(self):
-    #         return {"optimizer": optimizer, "lr_scheduler": scheduler}
-    model.configure_optimizers = lambda: {
-        "optimizer": optimizer,
-        "lr_scheduler": scheduler,
-    }
-
-    if not os.path.isdir(params.checkpoint_dir):
-        os.makedirs(
-            params.checkpoint_dir
-        )  # __jm__ lightning should create a checkpoint itself
-
-    loggers = [TensorBoardLogger(params.checkpoint_dir)]
-    if neptune_run is not None:
-        loggers.append(NeptuneLogger(run=neptune_run))
-
-    trainer = pl.Trainer(
-        logger=loggers,
-        max_epochs=stop_epoch,
-        # deterministc=,
-        # benchmark=,
-        # profiler=,
-        # detect_anomaly=,
-    )
-
-    print("Starting training")
-    print("Params accessed until this point:")
-    print("\n\t".join(sorted(params.history)))
-    print("Params ignored until this point:")
-    print("\n\t".join(params.get_ignored_args()))
-
-    trainer.fit(model, train_dataloaders=base_loader, val_dataloaders=val_loader)
-
+    pass
     # deal with
     # es_epoch, es_threshold
     # eval_freq
@@ -282,9 +213,8 @@ def train(
     #     ).open("w") as f:
     #         json.dump(delta_params_list, f, indent=2)
 
-    return model
 
-
+# __jm__ TODO: put this somewhere else
 def plot_metrics(
     metrics_per_epoch: dict[str, float | list[float]], epoch: int, fig_dir: Path
 ):
@@ -305,218 +235,18 @@ def plot_metrics(
         plt.close()
 
 
-def get_scheduler(params, optimizer, stop_epoch=None) -> lr_scheduler._LRScheduler:
-    if params.lr_scheduler == "cosine":
-        T_0 = stop_epoch if stop_epoch is not None else params.stop_epoch // 4
-        return lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0)
-    elif params.lr_scheduler in ["none", "multisteplr"]:
-        if params.milestones is not None:
-            milestones = params.milestones
-        else:
-            milestones = list(range(0, params.stop_epoch, params.stop_epoch // 4))[1:]
-        return lr_scheduler.MultiStepLR(
-            optimizer,
-            milestones=milestones,
-            gamma=1,
-        )
-    raise TypeError(params.lr_scheduler)
-
-
-# region dataloaders
-def get_image_size(model: Arg.Model, dataset: Arg.Dataset):
-    if "Conv" in model:
-        if dataset in ["omniglot", "cross_char"]:
-            image_size = 28
-        else:
-            image_size = 84
-    else:
-        image_size = 224
-    return image_size
-
-
-def get_train_val_files(dataset: Arg.Dataset) -> tuple[os.PathLike, os.PathLike]:
-    if dataset == "cross":
-        base_file = os.path.join(configs.data_dir["miniImagenet"], "all.json")
-        val_file = os.path.join(configs.data_dir["CUB"], "val.json")
-    elif dataset == "cross_char":
-        base_file = os.path.join(configs.data_dir["omniglot"], "noLatin.json")
-        val_file = os.path.join(configs.data_dir["emnist"], "val.json")
-    else:
-        base_file = os.path.join(configs.data_dir[dataset], "base.json")
-        val_file = os.path.join(configs.data_dir[dataset], "val.json")
-    return base_file, val_file
-
-
-def get_train_val_dataloaders(
-    params: ParamHolder,
-    get_datamgrs_callback: Callable[[int], tuple[DataManager, DataManager]],
-):
-    image_size = get_image_size(params.model, params.dataset)
-    train_val_files = get_train_val_files(params.dataset)
-
-    base_file, val_file = train_val_files
-
-    base_datamgr, val_datamgr = get_datamgrs_callback(image_size)
-
-    base_loader = base_datamgr.get_data_loader(base_file, aug=params.train_aug)
-    val_loader = val_datamgr.get_data_loader(val_file, aug=False)
-
-    return base_loader, val_loader
-
-
-# endregion
-
-
-# region baseline
-def set_default_stop_epoch(params: ParamHolder):
-    if params.method in ["baseline", "baseline++"]:
-        if params.dataset in ["omniglot", "cross_char"]:
-            params.stop_epoch = 5
-        elif params.dataset in ["CUB"]:
-            params.stop_epoch = 200  # This is different as stated in the open-review paper. However, using 400 epoch in baseline actually lead to over-fitting
-        else:
-            params.stop_epoch = 400  # default
-    else:  # meta-learning methods
-        if params.n_shot == 5:
-            params.stop_epoch = 400
-        else:
-            params.stop_epoch = 600  # default
-
-
-def setup_baseline_dataloaders(params: ParamHolder):
-    return get_train_val_dataloaders(
-        params,
-        lambda image_size: (
-            (base_datamgr := SimpleDataManager(image_size, batch_size=16)),
-            (val_datamgr := SimpleDataManager(image_size, batch_size=64)),
-            (base_datamgr, val_datamgr),
-        )[-1],
-    )
-
-
-def setup_baseline_model(params: ParamHolder) -> BaselineTrain:
-    if params.dataset == "omniglot":
-        assert (
-            params.num_classes >= 4112
-        ), "class number need to be larger than max label id in base class"
-    elif params.dataset == "cross_char":
-        assert (
-            params.num_classes >= 1597
-        ), "class number need to be larger than max label id in base class"
-
-    if params.dataset == "omniglot":
-        scale_factor = 10
-    else:
-        scale_factor = 2
-
-    model = BaselineTrain(
-        model_dict[params.model],
-        n_classes=params.num_classes,
-        scale_factor=scale_factor,
-        loss_type="softmax" if params.method == "baseline" else "dist",
-    )
-
-    return model
-
-
-def setup_baseline(params: ParamHolder) -> tuple[BaselineTrain, DataLoader, DataLoader]:
-    return setup_baseline_model(params), *setup_baseline_dataloaders(params)
-
-
-# endregion
-
-# region adaptive
-
-
-def setup_adaptive_dataloaders(
-    params: ParamHolder,
-    train_few_shot_params: dict[str, int],
-) -> tuple[DataLoader, DataLoader]:
-    return get_train_val_dataloaders(
-        params,
-        lambda image_size: (
-            (base_mgr := SetDataManager(image_size, **train_few_shot_params)),
-            (val_mgr := SetDataManager(image_size, **train_few_shot_params)),
-            (base_mgr, val_mgr),
-        )[-1],
-    )
-
-
-def setup_adaptive_model(
-    params: ParamHolder,
-    train_few_shot_params: dict[str, int],
-) -> MetaTemplate:
-    if params.method in ["DKT", "protonet", "matchingnet"]:
-        model = method_dict[params.method](
-            model_dict[params.model], **train_few_shot_params
-        )
-        if params.method == "DKT":
-            model.init_summary()
-    elif params.method in ["relationnet", "relationnet_softmax"]:
-        model_dict_mod = model_dict | {
-            "Conv4": backbone.Conv4NP,
-            "Conv6": backbone.Conv6NP,
-            "Conv4S": backbone.Conv4SNP,
-        }
-
-        model = RelationNet(
-            feature_model=lambda: model_dict_mod[params.model](flatten=False),
-            loss_type="mse" if params.method == "relationnet" else "softmax",
-            **train_few_shot_params,
-        )
-    elif params.method in ["maml", "maml_approx", "hyper_maml", "bayes_hmaml"]:
-        # __jm__ huh
-        backbone.ConvBlock.maml = True
-        backbone.SimpleBlock.maml = True
-        backbone.BottleneckBlock.maml = True
-        backbone.ResNet.maml = True
-        model = method_dict[params.method](
-            model_dict[params.model],
-            params=params,
-            approx=(params.method == "maml_approx"),
-            **train_few_shot_params,
-        )
-        if params.dataset in [
-            "omniglot",
-            "cross_char",
-        ]:  # maml use different parameter in omniglot
-            model.n_task = 32
-            model.task_update_num = 1
-            model.train_lr = 0.1
-
-            params.stop_epoch *= model.n_task  # MAML runs a few tasks per epoch
-    elif params.method in hypernet_types.keys():
-        hn_type = hypernet_types[params.method]
-        model = hn_type(
-            model_dict[params.model], params=params, **train_few_shot_params
-        )
-
-    return model
-
-
-def setup_adaptive(params: ParamHolder) -> tuple[MetaTemplate, DataLoader, DataLoader]:
-    # __jm__ n_query is 'hardcoded' here - make it configurable?
-    params.n_query: ParamStruct.n_query = max(
-        1, int(16 * params.test_n_way / params.train_n_way)
-    )  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
-    print(f"{params.n_query=}")
-
-    train_few_shot_params = dict(
-        n_way=params.train_n_way, n_support=params.n_shot, n_query=params.n_query
-    )
-
-    model = setup_adaptive_model(params, train_few_shot_params)
-    dataloaders = setup_adaptive_dataloaders(params, train_few_shot_params)
-    return model, *dataloaders
-
-
-# endregion
-
-
 def main():
     # params = parse_args("train")
     params = ParamHolder().parse_args()
-    _set_seed(params.seed)
+    if params.args_file is not None and os.path.isfile(params.args_file):
+        cli_resume = params.resume
+        params.load(params.args_file)
+        # overwrite
+        params.resume = cli_resume
+    else:
+        assert \
+            params.dataset is not None and \
+            params.method is not None
 
     if params.dataset in ["omniglot", "cross_char"]:
         assert params.model == "Conv4" and not params.train_aug, (
@@ -525,127 +255,121 @@ def main():
         )
         # params.model = 'Conv4S'
         # no need for this, since omniglot is loaded as RGB
-    if params.stop_epoch is None:
-        set_default_stop_epoch(params)
 
-    if params.method in ["baseline", "baseline++"]:
-        model, base_loader, val_loader = setup_baseline(params)
-    else:
-        model, base_loader, val_loader = setup_adaptive(params)
-
-    # __jm__ off by one batch size?
     # print(f"{len(base_loader)=}")
     # for b in base_loader:
     #     print(f"{len(b)=}")
     #     print(f"{b[0].shape=}")
     #     print(f"{b[1].shape=}")
     #     return
-    print({b[0].shape for b in base_loader})
 
-    params.checkpoint_dir = f"{configs.save_dir}/checkpoints/{params.dataset}/{params.model}_{params.method}"
-
-    if params.train_aug:
-        params.checkpoint_dir += "_aug"
-    if not params.method in ["baseline", "baseline++"]:
-        params.checkpoint_dir += "_%dway_%dshot" % (params.train_n_way, params.n_shot)
-    if params.checkpoint_suffix != "":
-        params.checkpoint_dir = params.checkpoint_dir + "_" + params.checkpoint_suffix
-    if not os.path.isdir(params.checkpoint_dir):
-        os.makedirs(params.checkpoint_dir)
-    print(params.checkpoint_dir)
-
-    if params.resume:
-        resume_file = get_resume_file(params.checkpoint_dir)
-        print(resume_file)
-        if resume_file is not None:
-            tmp = torch.load(resume_file)
-            params.start_epoch = tmp["epoch"] + 1
-            model.load_state_dict(tmp["state"])
-            print("Resuming training from", resume_file, "epoch", params.start_epoch)
-
+    # __jm__ reimplement warmup later on
     # We also support warmup from pretrained baseline feature, but we never used it in our paper
-    elif params.warmup:
-        baseline_checkpoint_dir = (
-            f"{configs.save_dir}/checkpoints/{params.dataset}/{params.model}_baseline"
-        )
-        if params.train_aug:
-            baseline_checkpoint_dir += "_aug"
-        warmup_resume_file = get_resume_file(baseline_checkpoint_dir)
-        tmp = torch.load(warmup_resume_file)
-        if tmp is not None:
-            state = tmp["state"]
-            state_keys = list(state.keys())
-            for _i, key in enumerate(state_keys):
-                if "feature." in key:
-                    newkey = key.replace(
-                        "feature.", ""
-                    )  # an architecture model has attribute 'feature', load architecture feature to backbone by casting name from 'feature.trunk.xx' to 'trunk.xx'
-                    state[newkey] = state.pop(key)
-                else:
-                    state.pop(key)
-            model.feature.load_state_dict(state)
-        else:
-            raise ValueError("No warm_up file")
-
-    args_dict = params.as_dict()
-    with (Path(params.checkpoint_dir) / "args.json").open("w") as f:
-        json.dump(
-            {
-                k: v if isinstance(v, (int, str, bool, float)) else str(v)
-                for (k, v) in args_dict.items()
-            },
-            f,
-            indent=2,
-        )
-
-    with (Path(params.checkpoint_dir) / "rerun.sh").open("w") as f:
-        print("python", " ".join(sys.argv), file=f)
-
-    neptune_run = setup_neptune(params)
-    if neptune_run is not None:
-        neptune_run["model"] = str(model)
+    # elif params.warmup:
+    #     baseline_checkpoint_dir = (
+    #         f"{configs.save_dir}/checkpoints/{params.dataset}/{params.model}_baseline"
+    #     )
+    #     if params.train_aug:
+    #         baseline_checkpoint_dir += "_aug"
+    #     warmup_resume_file = get_resume_file(baseline_checkpoint_dir)
+    #     tmp = torch.load(warmup_resume_file)
+    #     if tmp is not None:
+    #         state = tmp["state"]
+    #         state_keys = list(state.keys())
+    #         for _i, key in enumerate(state_keys):
+    #             if "feature." in key:
+    #                 newkey = key.replace(
+    #                     "feature.", ""
+    #                 )  # an architecture model has attribute 'feature', load architecture feature to backbone by casting name from 'feature.trunk.xx' to 'trunk.xx'
+    #                 state[newkey] = state.pop(key)
+    #             else:
+    #                 state.pop(key)
+    #         model.feature.load_state_dict(state)
+    #     else:
+    #         raise ValueError("No warm_up file")
 
     # train and test are split -- __jm__
 
-    if not params.evaluate_model:
-        model = train(
-            base_loader,
-            val_loader,
-            model,
-            params.optim,
-            params.start_epoch,
-            params.stop_epoch,
-            params,
-            neptune_run=neptune_run,
-        )
+    # things before call to train can be done mostly concurrently
+    checkpoint_dir = get_checkpoint_dir(params)
+    save_run_params(checkpoint_dir, params)
+    checkpoint_file = get_checkpoint_file(
+        checkpoint_dir) if params.resume else None
+    loggers = setup.setup_loggers(checkpoint_dir, params)
 
-    params.split = "novel"
-    params.save_iter = -1
+    _set_seed(params.seed)
 
-    try:
-        do_save_fts(params)
-    except Exception as e:
-        print("Cannot save features bc of", e)
+    model = setup.initialize_model(params)
+    base_dataloader, val_dataloader = setup.initialize_dataloaders(params)
+    # parse_dataloaders
+    print({b[0].shape for b in base_dataloader})
 
-    val_datasets = [params.dataset]
-    if params.dataset in ["cross", "miniImagenet"]:
-        val_datasets = ["cross", "miniImagenet"]
+    optimizer: dict[Arg.Optim, torch.optim.Optimizer] = {
+        "adam": torch.optim.Adam,
+        "sgd": torch.optim.SGD
+    }[params.optim](model.parameters(), lr=params.lr)
 
-    for d in val_datasets:
-        print("Evaluating on", d)
-        params.dataset = d
-        # num of epochs for finetuning on testing.
-        for hn_val_epochs in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 25, 50, 100, 200]:
-            params.hn_val_epochs = hn_val_epochs
-            params.hm_set_forward_with_adaptation = True
-            # add default test params
-            params.adaptation = True
-            params.repeat = 5
-            print(f"Testing with {hn_val_epochs=}")
-            test_results = perform_test(params)
-            if neptune_run is not None:
-                neptune_run[f"full_test/{d}/metrics @ {hn_val_epochs}"] = test_results
-            neptune_run.stop()
+    scheduler = setup.get_scheduler(params, optimizer)
+
+    # class ConfigureOptimizers(pl.Callback):
+    #     def configure_optimizers(self):
+    #         return {"optimizer": optimizer, "lr_scheduler": scheduler}
+    model.configure_optimizers = lambda: {
+        "optimizer": optimizer,
+        "lr_scheduler": scheduler,
+    }
+    # HACK, TODO: check if this works
+
+    trainer = pl.Trainer(
+        logger=loggers,
+        max_epochs=params.stop_epoch,
+        # deterministc=,
+        # benchmark=,
+        # profiler=,
+        # detect_anomaly=,
+    )
+
+    print("Starting training")
+    print("Params accessed until this point:")
+    print("\n\t".join(sorted(params.history)))
+    print("Params ignored until this point:")
+    print("\n\t".join(params.get_ignored_args()))
+
+    trainer.fit(
+        model,
+        train_dataloaders=base_dataloader,
+        val_dataloaders=val_dataloader,
+        ckpt_path=checkpoint_file,
+    )
+
+    # __jm__ train() should only train - its easy to make pipelines afterwards
+    # params.split = "novel"
+    # params.save_iter = -1
+
+    # try:
+    #     do_save_fts(params)
+    # except Exception as e:
+    #     print("Cannot save features bc of", e)
+
+    # val_datasets = [params.dataset]
+    # if params.dataset in ["cross", "miniImagenet"]:
+    #     val_datasets = ["cross", "miniImagenet"]
+
+    # for d in val_datasets:
+    #     print("Evaluating on", d)
+    #     params.dataset = d
+    #     # num of epochs for finetuning on testing.
+    #     for hn_val_epochs in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 25, 50, 100, 200]:
+    #         params.hn_val_epochs = hn_val_epochs
+    #         params.hm_set_forward_with_adaptation = True
+    #         # add default test params
+    #         params.adaptation = True
+    #         params.repeat = 5
+    #         print(f"Testing with {hn_val_epochs=}")
+    #         test_results = perform_test(params)
+    #         if neptune_run is not None:
+    #             neptune_run[f"full_test/{d}/metrics @ {hn_val_epochs}"] = test_results
+    #         neptune_run.stop()
 
 
 if __name__ == "__main__":
