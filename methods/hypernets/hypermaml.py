@@ -10,7 +10,7 @@ from torch.nn import functional as F
 import pytorch_lightning as pl
 
 import backbone
-from io_utils import ParamHolder
+from io_params import ParamHolder
 from methods.hypernets.utils import accuracy_from_scores, get_param_dict
 from methods.meta_template import MetaTemplate
 
@@ -110,7 +110,8 @@ class HyperMAML(MetaTemplate):
     def _init_feature_net(self):
         if self.hm_load_feature_net:
             print(
-                f"loading feature net model from location: {self.hm_feature_net_path}"
+                f"loading feature net model from location: {
+                    self.hm_feature_net_path}"
             )
             model_dict = torch.load(self.hm_feature_net_path)
             self.feature.load_state_dict(model_dict["state"])
@@ -124,7 +125,8 @@ class HyperMAML(MetaTemplate):
         for i in range(self.hn_tn_depth):
             in_dim = self.feat_dim if i == 0 else self.hn_tn_hidden_size
             out_dim = (
-                self.n_way if i == (self.hn_tn_depth - 1) else self.hn_tn_hidden_size
+                self.n_way if i == (self.hn_tn_depth -
+                                    1) else self.hn_tn_hidden_size
             )
 
             linear = backbone.Linear_fw(in_dim, out_dim)
@@ -208,7 +210,8 @@ class HyperMAML(MetaTemplate):
             delta_params_list = []
 
             for name, param_net in self.hypernet_heads.items():
-                support_embeddings_resh = support_embeddings.reshape(self.n_way, -1)
+                support_embeddings_resh = support_embeddings.reshape(
+                    self.n_way, -1)
 
                 delta_params = param_net(support_embeddings_resh)
                 bias_neurons_num = self.target_net_param_shapes[name][0] // self.n_way
@@ -325,7 +328,8 @@ class HyperMAML(MetaTemplate):
                     if p == 1:
                         # update weights of classifier network by adding gradient
                         for k, weight in enumerate(self.classifier.parameters()):
-                            update_value = self.train_lr * grad[classifier_offset + k]
+                            update_value = self.train_lr * \
+                                grad[classifier_offset + k]
                             self._update_weight(weight, update_value)
 
                     elif 0.0 < p < 1.0:
@@ -350,10 +354,12 @@ class HyperMAML(MetaTemplate):
         if not maml_warmup_used:
             if self.enhance_embeddings:
                 with torch.no_grad():
-                    logits = self.classifier.forward(support_embeddings).detach()
+                    logits = self.classifier.forward(
+                        support_embeddings).detach()
                     logits = F.softmax(logits, dim=1)
 
-                labels = support_data_labels.view(support_embeddings.shape[0], -1)
+                labels = support_data_labels.view(
+                    support_embeddings.shape[0], -1)
                 support_embeddings = torch.cat(
                     (support_embeddings, logits, labels), dim=1
                 )
@@ -362,7 +368,8 @@ class HyperMAML(MetaTemplate):
                 weight.fast = None
             self.zero_grad()
 
-            support_embeddings = self.apply_embeddings_strategy(support_embeddings)
+            support_embeddings = self.apply_embeddings_strategy(
+                support_embeddings)
 
             delta_params = self.get_hn_delta_params(support_embeddings)
 
@@ -395,7 +402,7 @@ class HyperMAML(MetaTemplate):
             .view(self.n_way * self.n_support, *x.size()[2:])
         )  # support data
         query_data = (
-            x[:, self.n_support :, :, :, :]
+            x[:, self.n_support:, :, :, :]
             .contiguous()
             .view(self.n_way * self.n_query, *x.size()[2:])
         )  # query data
@@ -440,7 +447,8 @@ class HyperMAML(MetaTemplate):
                 return scores, None
 
     # __jm__ this needs to be removed
-    def set_forward_adaptation(self, x, is_feature=False):  # overwrite parrent function
+    # overwrite parrent function
+    def set_forward_adaptation(self, x, is_feature=False):
         raise ValueError(
             "MAML performs further adapation simply by increasing task_upate_num"
         )
@@ -449,13 +457,15 @@ class HyperMAML(MetaTemplate):
         scores, total_delta_sum = self.set_forward(
             x, is_feature=False, train_stage=True
         )
-        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
+        query_data_labels = torch.repeat_interleave(
+            range(self.n_way), self.n_query)
 
         if self.hm_support_set_loss:
             support_data_labels = torch.repeat_interleave(
                 range(self.n_way), self.n_support
             )
-            query_data_labels = torch.cat((support_data_labels, query_data_labels))
+            query_data_labels = torch.cat(
+                (support_data_labels, query_data_labels))
 
         loss = self.loss_fn(scores, query_data_labels)
 
@@ -558,7 +568,8 @@ class HyperMAML(MetaTemplate):
         if self.hm_set_forward_with_adaptation:
             for _i, (x, _) in enumerate(test_loader):
                 self.n_query = x.size(1) - self.n_support
-                assert self.n_way == x.size(0), "MAML do not support way change"
+                assert self.n_way == x.size(
+                    0), "MAML do not support way change"
                 s = time()
                 acc_task, acc_at_metrics = self.set_forward_with_adaptation(x)
                 t = time()
@@ -579,7 +590,8 @@ class HyperMAML(MetaTemplate):
                 acc_all.append(correct_this / count_this * 100)
                 eval_time += t - s
 
-        metrics = {k: np.mean(v) if len(v) > 0 else 0 for (k, v) in acc_at.items()}
+        metrics = {k: np.mean(v) if len(
+            v) > 0 else 0 for (k, v) in acc_at.items()}
 
         num_tasks = len(acc_all)
         acc_all = np.asarray(acc_all)
@@ -622,7 +634,8 @@ class HyperMAML(MetaTemplate):
             for i in range(1, self.hn_val_epochs + 1):
                 self_copy.train()
                 val_opt.zero_grad()
-                loss, val_support_acc = self_copy.set_forward_loss_with_adaptation(x)
+                loss, val_support_acc = self_copy.set_forward_loss_with_adaptation(
+                    x)
                 loss.backward()
                 val_opt.step()
                 self_copy.eval()

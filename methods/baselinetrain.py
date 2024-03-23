@@ -8,6 +8,7 @@ from typing import Literal
 from methods.meta_template import MetaTemplate
 
 
+# TODO: mark as MetaTemplate
 class BaselineTrain(pl.LightningModule):
     def __init__(
         self,
@@ -87,7 +88,7 @@ class BaselineFinetune(MetaTemplate):
             rand_id = torch.randperm(support_size)
             for i in range(0, support_size, batch_size):
                 set_optimizer.zero_grad()
-                selected_id = rand_id[i : min(i + batch_size, support_size)]
+                selected_id = rand_id[i: min(i + batch_size, support_size)]
                 z_batch = z_support[selected_id]
                 y_batch = y_support[selected_id]
                 scores = self.linear_clf(z_batch)
