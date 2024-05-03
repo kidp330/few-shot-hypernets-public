@@ -1,8 +1,8 @@
-
 import torch
 import random
 import torch.optim
 import pytorch_lightning as pl
+from pytorch_lightning.cli import LightningCLI
 import os
 
 import setup
@@ -246,7 +246,7 @@ def main():
     else:
         assert \
             params.dataset is not None and \
-            params.method is not None
+            params.method is not None, "Please specify the dataset and method"
 
     if params.dataset in ["omniglot", "cross_char"]:
         assert params.model == "Conv4" and not params.train_aug, (
@@ -348,4 +348,5 @@ def main():
 
 
 if __name__ == "__main__":
+    cli = LightningCLI()
     main()
