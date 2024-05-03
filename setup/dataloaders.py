@@ -46,6 +46,7 @@ def __get_dataloaders_generic(
     params: ParamHolder,
     get_datamgrs_callback: Callable[[int], tuple[DataManager, DataManager]],
 ):
+    # NOTE: how to handle this for protonet, matchingnet
     image_size = __get_image_size(params.model, params.dataset)
     train_val_files = __get_train_val_files(params.dataset)
 

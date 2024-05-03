@@ -11,7 +11,7 @@ from methods.hypernets import hypernet_types
 # region type imports
 from methods.baselinetrain import BaselineTrain
 
-from io_params import ParamHolder
+from io_params import ParamHolder, Arg
 from methods.meta_template import MetaTemplate
 from methods.relationnet import RelationNet
 # endregion
@@ -74,19 +74,25 @@ def _setup_adaptive_model(
         if params.method == "DKT":
             model.init_summary()
     elif params.method in ["relationnet", "relationnet_softmax"]:
-        model_dict_mod = model_dict | {
-            "Conv4": backbone.Conv4NP,
-            "Conv6": backbone.Conv6NP,
-            "Conv4S": backbone.Conv4SNP,
-        }
+        def feature_model():
+            match params.model:
+                case Arg.Model.Conv4:
+                    return backbone.Conv4NP
+                case Arg.Model.Conv6:
+                    return backbone.Conv6NP
+                case Arg.Model.Conv4S:
+                    return backbone.Conv4SNP
+                case _:
+                    return lambda: model_dict[params.model](flatten=False)
 
         model = RelationNet(
-            feature_model=lambda: model_dict_mod[params.model](flatten=False),
+            feature_model=feature_model,
             loss_type="mse" if params.method == "relationnet" else "softmax",
             **train_few_shot_params,
         )
     elif params.method in ["maml", "maml_approx", "hyper_maml", "bayes_hmaml"]:
         # TODO: there must be a better way to do this
+        # NOTE: check if this should be done for hyper/bayes maml
         backbone.ConvBlock.maml = True
         backbone.SimpleBlock.maml = True
         backbone.BottleneckBlock.maml = True
@@ -102,9 +108,11 @@ def _setup_adaptive_model(
             "cross_char",
         ]:  # maml use different parameter in omniglot
             model.n_task = 32
+            # NOTE: check if this should be done for hyper/bayes maml
             model.task_update_num = 1
             model.train_lr = 0.1
 
+            # __jm__ uhh I don't like this
             params.stop_epoch *= model.n_task  # MAML runs a few tasks per epoch
     elif params.method in hypernet_types.keys():
         hn_type = hypernet_types[params.method]

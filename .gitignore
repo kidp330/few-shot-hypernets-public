@@ -141,8 +141,7 @@ filelists/QMUL/*.json
 
 
 # neptune logs
-.neptune/
-.neptune/*
+.neptune*
 
 record/
 

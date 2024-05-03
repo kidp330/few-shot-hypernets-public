@@ -1,69 +1,64 @@
 import torch
 import os
 import h5py
-
+from pathlib import Path
 import configs
 import backbone
 from data.datamgr import SimpleDataManager
 from methods.hypernets import hypernet_types
 from io_utils import (
     model_dict,
+    illegal_models,
     parse_args,
-    get_resume_file,
-    get_best_file,
-    get_assigned_file,
 )
-
+from persist import get_checkpoint_dir
+from setup.dataloaders import __get_image_size
+import time
 
 def save_features(model, data_loader, outfile):
-    f = h5py.File(outfile, "w")
-    max_count = len(data_loader) * data_loader.batch_size
-    all_labels = f.create_dataset("all_labels", (max_count,), dtype="i")
-    all_feats = None
-    count = 0
-    for i, (x, y) in enumerate(data_loader):
-        if i % 10 == 0:
-            print("{:d}/{:d}".format(i, len(data_loader)))
-        feats = model(x)
-        if all_feats is None:
-            all_feats = f.create_dataset(
-                "all_feats", [max_count] + list(feats.size()[1:]), dtype="f"
-            )
-        all_feats[count : count + feats.size(0)] = feats.data.cpu().numpy()
-        all_labels[count : count + feats.size(0)] = y.cpu().numpy()
-        count = count + feats.size(0)
+    with h5py.File(outfile, "w") as f:
+        max_count = len(data_loader) * data_loader.batch_size
+        all_labels = f.create_dataset("all_labels", (max_count,), dtype="i")
+        all_feats = None
+        count = 0
+        for i, (x, y) in enumerate(data_loader):
+            if i % 10 == 0:
+                print("{:d}/{:d}".format(i, len(data_loader)))
+            feats = model(x)
+            if all_feats is None:
+                all_feats = f.create_dataset(
+                    "all_feats", [max_count] + list(feats.size()[1:]), dtype="f"
+                )
+            all_feats[count: count + feats.size(0)] = feats.data.cpu().numpy()
+            all_labels[count: count + feats.size(0)] = y.cpu().numpy()
+            count = count + feats.size(0)
 
-    count_var = f.create_dataset("count", (1,), dtype="i")
-    count_var[0] = count
+        count_var = f.create_dataset("count", (1,), dtype="i")
+        count_var[0] = count
 
-    f.close()
 
+def _get_embeddings_file(checkpoint_file: Path, split: str) -> Path:
+    dir = checkpoint_file.parent / "embeddings" / split
+    return dir / time.now() + ".hdf5"
+    if params.save_iter != -1:
+        outfile = os.path.join(
+            checkpoint_dir.replace("checkpoints", "features"),
+            split + "_" + str(params.save_iter) + ".hdf5",
+        )
+    else:
+        outfile = os.path.join(
+            checkpoint_dir.replace("checkpoints", "features"), split + ".hdf5"
+        )
+    return outfile
+
+def get_features_dir
 
 def do_save_fts(params):
-    illegal_models = [
-        "maml",
-        "maml_approx",
-        "hyper_maml",
-        "bayes_hmaml",
-        "DKT",
-    ] + list(hypernet_types.keys())
     assert (
         params.method not in illegal_models
-    ), "maml do not support save_feature and run"
+    ), "Chosen method does not support saving features"
 
-    if "Conv" in params.model:
-        if params.dataset in ["omniglot", "cross_char"]:
-            image_size = 28
-        else:
-            image_size = 84
-    else:
-        image_size = 224
-
-    if params.dataset in ["omniglot", "cross_char"]:
-        assert (
-            params.model == "Conv4" and not params.train_aug
-        ), "omniglot only support Conv4 without augmentation"
-        params.model = "Conv4S"
+    image_size = __get_image_size(params.model, params.dataset)
 
     split = params.split
     if params.dataset == "cross":
@@ -79,38 +74,7 @@ def do_save_fts(params):
     else:
         loadfile = configs.data_dir[params.dataset] + split + ".json"
 
-    checkpoint_dir = "%s/checkpoints/%s/%s_%s" % (
-        configs.save_dir,
-        params.dataset,
-        params.model,
-        params.method,
-    )
-    if params.train_aug:
-        checkpoint_dir += "_aug"
-    if not params.method in ["baseline", "baseline++"]:
-        checkpoint_dir += "_%dway_%dshot" % (params.train_n_way, params.n_shot)
-
-    if params.checkpoint_suffix != "":
-        checkpoint_dir = checkpoint_dir + "_" + params.checkpoint_suffix
-
-    if params.save_iter != -1:
-        modelfile = get_assigned_file(checkpoint_dir, params.save_iter)
-    elif params.method in ["baseline", "baseline++"]:
-        modelfile = get_resume_file(checkpoint_dir)
-    else:
-        print("looking for best file in", checkpoint_dir)
-        modelfile = get_best_file(checkpoint_dir)
-        print("got", modelfile)
-
-    if params.save_iter != -1:
-        outfile = os.path.join(
-            checkpoint_dir.replace("checkpoints", "features"),
-            split + "_" + str(params.save_iter) + ".hdf5",
-        )
-    else:
-        outfile = os.path.join(
-            checkpoint_dir.replace("checkpoints", "features"), split + ".hdf5"
-        )
+    features_dir = get_features_dir(params)
 
     datamgr = SimpleDataManager(image_size, batch_size=64)
     data_loader = datamgr.get_data_loader(loadfile, aug=False)
@@ -130,7 +94,7 @@ def do_save_fts(params):
         model = model_dict[params.model]()
 
     tmp = torch.load(modelfile)
-    state = tmp["state"]
+    state = tmp["state_dict"]
     state_keys = list(state.keys())
     for i, key in enumerate(state_keys):
         if "feature." in key:
@@ -144,8 +108,8 @@ def do_save_fts(params):
     model.load_state_dict(state)
     model.eval()
 
-    dirname = os.path.dirname(outfile)
-    if not os.path.isdir(dirname):
+    dirname = Path(outfile).parent
+    if not dirname.is_dir():
         os.makedirs(dirname)
     save_features(model, data_loader, outfile)
 

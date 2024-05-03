@@ -44,6 +44,14 @@ method_dict: dict[str, pl.LightningModule] = {
     Arg.Method.hn_poc: HyperNetPOC,
 }
 
+illegal_models = [
+    "maml",
+    "maml_approx",
+    "hyper_maml",
+    "bayes_hmaml",
+    "DKT",
+] + list(hypernet_types.keys())
+
 
 def parse_args(script: Literal["train", "test", "save_features"]):
     pass  # TAP doesn't validate arg to script mapping, TODO __jm__

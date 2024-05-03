@@ -23,6 +23,15 @@ def save_run_params(checkpoint_dir: Path, params: ParamHolder):
 
 
 def get_checkpoint_file(checkpoint_dir: Path) -> Path:
+    # if params.save_iter != -1:
+    #     modelfile = get_assigned_file(checkpoint_dir, params.save_iter)
+    # elif params.method in ["baseline", "baseline++"]:
+    #     modelfile = get_resume_file(checkpoint_dir)
+    # else:
+    #     print("looking for best file in", checkpoint_dir)
+    #     modelfile = get_best_file(checkpoint_dir)
+    #     print("got", modelfile)
+
     pl_dir = checkpoint_dir / "lightning_logs"
     checkpoints_glob = pl_dir.glob("version_*/checkpoints/*")
     latest_checkpoint = max(checkpoints_glob, key=os.path.getctime)
