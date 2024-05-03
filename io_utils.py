@@ -7,6 +7,7 @@ import backbone
 
 from methods.DKT import DKT
 from methods.baselinetrain import BaselineTrain
+from methods.hypernets import hypernet_types
 from methods.hypernets.bayeshmaml import BayesHMAML
 from methods.hypernets.hypermaml import HyperMAML
 from methods.hypernets.hypernet_kernel import HyperShot

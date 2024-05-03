@@ -8,8 +8,7 @@ from torch.utils.data import DataLoader
 from pathlib import Path
 from typing import Callable
 
-from io_params import ParamHolder
-from io_utils import Arg
+from io_params import ParamHolder, Arg
 from data.datamgr import (
     DataManager,
     SimpleDataManager,
@@ -73,7 +72,6 @@ def setup_simple_dataloaders(params: ParamHolder) -> tuple[DataLoader, DataLoade
 
 def setup_set_dataloaders(
     params: ParamHolder,
-    train_few_shot_params: dict[str, int],
 ) -> tuple[DataLoader, DataLoader]:
     # __jm__ n_query is 'hardcoded' here - make it configurable?
     params.n_query = max(
@@ -81,15 +79,19 @@ def setup_set_dataloaders(
     )  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
     print(f"{params.n_query=}")
 
-    train_few_shot_params = dict(
-        n_way=params.train_n_way, n_support=params.n_shot, n_query=params.n_query
-    )
-
     return __get_dataloaders_generic(
         params,
         lambda image_size: (
-            (base_mgr := SetDataManager(image_size, **train_few_shot_params)),
-            (val_mgr := SetDataManager(image_size, **train_few_shot_params)),
+            (base_mgr := SetDataManager(image_size,
+                                        n_way=params.train_n_way,
+                                        n_support=params.n_shot,
+                                        n_query=params.n_query
+                                        )),
+            (val_mgr := SetDataManager(image_size,
+                                       n_way=params.test_n_way,
+                                       n_support=params.n_shot,
+                                       n_query=params.n_query
+                                       )),
             (base_mgr, val_mgr),
         )[-1],
     )

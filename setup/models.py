@@ -56,20 +56,18 @@ def _setup_baseline_model(params: ParamHolder) -> BaselineTrain:
         loss_type="softmax" if params.method == "baseline" else "dist",
     )
 
-    # __jm__ TODO: remove
-    if params.stop_epoch is None:
-        _set_default_stop_epoch(params)
-
     return model
 
 
 def _setup_adaptive_model(
-    params: ParamHolder,
-    train_few_shot_params: dict[str, int],
+    params: ParamHolder
 ) -> MetaTemplate:
     if params.method in ["DKT", "protonet", "matchingnet"]:
         model = method_dict[params.method](
-            model_dict[params.model], **train_few_shot_params
+            model_dict[params.model],
+            n_way=params.train_n_way,
+            n_support=params.n_shot,
+            n_query=params.n_query
         )
         if params.method == "DKT":
             model.init_summary()
@@ -88,7 +86,9 @@ def _setup_adaptive_model(
         model = RelationNet(
             feature_model=feature_model,
             loss_type="mse" if params.method == "relationnet" else "softmax",
-            **train_few_shot_params,
+            n_way=params.train_n_way,
+            n_support=params.n_shot,
+            n_query=params.n_query
         )
     elif params.method in ["maml", "maml_approx", "hyper_maml", "bayes_hmaml"]:
         # TODO: there must be a better way to do this
@@ -101,7 +101,9 @@ def _setup_adaptive_model(
             model_dict[params.model],
             params=params,
             approx=(params.method == "maml_approx"),
-            **train_few_shot_params,
+            n_way=params.train_n_way,
+            n_support=params.n_shot,
+            n_query=params.n_query
         )
         if params.dataset in [
             "omniglot",
@@ -117,13 +119,20 @@ def _setup_adaptive_model(
     elif params.method in hypernet_types.keys():
         hn_type = hypernet_types[params.method]
         model = hn_type(
-            model_dict[params.model], params=params, **train_few_shot_params
+            model_dict[params.model], params=params,
+            n_way=params.train_n_way,
+            n_support=params.n_shot,
+            n_query=params.n_query
+
         )
 
     return model
 
 
 def initialize_model(params: ParamHolder) -> MetaTemplate:
+    # __jm__ TODO: remove
+    if params.stop_epoch is None:
+        _set_default_stop_epoch(params)
     if params.method in ["baseline", "baseline++"]:
         return _setup_baseline_model(params)
     else:

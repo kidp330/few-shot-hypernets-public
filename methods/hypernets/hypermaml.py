@@ -49,7 +49,7 @@ class HyperMAML(MetaTemplate):
         model_func,
         n_way: int,
         n_support: int,
-        _n_query: int,
+        n_query: int,
         params: ParamHolder,
         approx=False,
     ):
