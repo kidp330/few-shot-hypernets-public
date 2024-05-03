@@ -8,6 +8,12 @@ import torch.nn.functional as F
 from torch.nn.utils.weight_norm import WeightNorm
 import pytorch_lightning as pl
 
+
+def _backbone_default_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
 # Basic ResNet model
 
 
@@ -117,7 +123,7 @@ class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
         stride=1,
         padding=0,
         bias=True,
-        device: torch.device = "cuda",
+        device: torch.device = _backbone_default_device(),
     ):
         self.device = device
         super().__init__(
@@ -158,7 +164,7 @@ class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
 
 # used in MAML to forward input with fast weight
 class BatchNorm2d_fw(nn.BatchNorm2d):
-    def __init__(self, num_features, device: torch.device = "cuda"):
+    def __init__(self, num_features, device: torch.device = _backbone_default_device()):
         self.device = device
         super().__init__(num_features, device=device)
         self.weight.fast = None
@@ -389,6 +395,8 @@ class BottleneckBlock(pl.LightningModule):
 class ConvNet(pl.LightningModule):
     def __init__(self, depth, flatten=True, pool=False):
         super().__init__()
+        self.save_hyperparameters()
+
         trunk = []
         for i in range(depth):
             indim = 3 if i == 0 else 64
@@ -404,7 +412,7 @@ class ConvNet(pl.LightningModule):
             trunk.append(Flatten())
 
         self.trunk = nn.Sequential(*trunk)
-        self.final_feat_dim: int = outdim if pool else 1600  # __jm__ suspicious line
+        self.final_feat_dim: int = outdim
 
     def forward(self, x):
         out = self.trunk(x)
