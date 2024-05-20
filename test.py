@@ -12,10 +12,9 @@ import torch.utils.data.sampler
 import backbone
 import configs
 import data.feature_loader as feat_loader
-from backbone import device
 from data.datamgr import SetDataManager
 from io_utils import get_assigned_file, get_best_file, model_dict, parse_args
-from methods.baselinefinetune import BaselineFinetune
+from methods.baselinetrain import BaselineFinetune
 from methods.DKT import DKT
 from methods.hypernets import hypernet_types
 from methods.hypernets.bayeshmaml import BayesHMAML
@@ -54,7 +53,8 @@ def feature_evaluation(
         img_feat = cl_data_file[cl]
         perm_ids = np.random.permutation(len(img_feat)).tolist()
         z_all.append(
-            [np.squeeze(img_feat[perm_ids[i]]) for i in range(n_support + n_query)]
+            [np.squeeze(img_feat[perm_ids[i]])
+             for i in range(n_support + n_query)]
         )  # stack each batch
 
     z_all = torch.from_numpy(np.array(z_all))
@@ -110,9 +110,10 @@ def single_test(params):
         elif params.model == "Conv4S":
             feature_model = backbone.Conv4SNP
         else:
-            feature_model = lambda: model_dict[params.model](flatten=False)
+            def feature_model(): return model_dict[params.model](flatten=False)
         loss_type = "mse" if params.method == "relationnet" else "softmax"
-        model = RelationNet(feature_model, loss_type=loss_type, **few_shot_params)
+        model = RelationNet(
+            feature_model, loss_type=loss_type, **few_shot_params)
     elif params.method in ["maml", "maml_approx"]:
         backbone.ConvBlock.maml = True
         backbone.SimpleBlock.maml = True
@@ -134,7 +135,8 @@ def single_test(params):
     elif params.method in list(hypernet_types.keys()):
         few_shot_params["n_query"] = 15
         hn_type: Type[HyperNetPOC] = hypernet_types[params.method]
-        model = hn_type(model_dict[params.model], params=params, **few_shot_params)
+        model = hn_type(model_dict[params.model],
+                        params=params, **few_shot_params)
         # model = HyperNetPOC(model_dict[params.model], **few_shot_params)
     elif params.method == "hyper_maml" or params.method == "bayes_hmaml":
         if params.method == "bayes_hmaml":
@@ -161,7 +163,6 @@ def single_test(params):
         raise ValueError("Unknown method")
 
     few_shot_params["n_query"] = 15
-    model = model.to(device())
 
     checkpoint_dir = "%s/checkpoints/%s/%s_%s" % (
         configs.save_dir,
@@ -196,7 +197,8 @@ def single_test(params):
             tmp = torch.load(modelfile)
             model.load_state_dict(tmp["state"])
         else:
-            print("[WARNING] Cannot find 'best_file.tar' in: " + str(checkpoint_dir))
+            print("[WARNING] Cannot find 'best_file.tar' in: " +
+                  str(checkpoint_dir))
 
     split = params.split
     if params.save_iter != -1:
@@ -222,7 +224,8 @@ def single_test(params):
         else:
             image_size = 224
 
-        datamgr = SetDataManager(image_size, n_eposide=iter_num, **few_shot_params)
+        datamgr = SetDataManager(
+            image_size, n_eposide=iter_num, **few_shot_params)
 
         if params.dataset == "cross":
             if split == "base":
@@ -252,11 +255,13 @@ def single_test(params):
                 novel_loader, return_std=True, return_time=True
             )
         else:
-            acc_mean, acc_std, *_ = model.test_loop(novel_loader, return_std=True)
+            acc_mean, acc_std, * \
+                _ = model.test_loop(novel_loader, return_std=True)
 
     else:
         novel_file = os.path.join(
-            checkpoint_dir.replace("checkpoints", "features"), split_str + ".hdf5"
+            checkpoint_dir.replace(
+                "checkpoints", "features"), split_str + ".hdf5"
         )  # defaut split = novel, but you can also test base or val classes
         cl_data_file = feat_loader.init_loader(novel_file)
 
@@ -304,7 +309,8 @@ def single_test(params):
             acc_mean,
             1.96 * acc_std / np.sqrt(iter_num),
         )
-        f.write("Time: %s, Setting: %s, Acc: %s \n" % (timestamp, exp_setting, acc_str))
+        f.write("Time: %s, Setting: %s, Acc: %s \n" %
+                (timestamp, exp_setting, acc_str))
 
     print("Test loop time:", eval_time)
     return acc_mean, eval_time
@@ -331,7 +337,8 @@ def perform_test(params):
     std_time = np.std(time_list)
     print("-----------------------------")
     print(
-        f"Seeds = {repeat} | Overall Test Acc = {mean_acc:.2f} +- {std_acc:.2f}. Eval time: {mean_time:.2f} +- {std_time:.2f}"
+        f"Seeds = {repeat} | Overall Test Acc = {
+            mean_acc:.2f} +- {std_acc:.2f}. Eval time: {mean_time:.2f} +- {std_time:.2f}"
     )
     print("-----------------------------")
     return {
@@ -349,4 +356,5 @@ def main():
 
 
 if __name__ == "__main__":
+    backbone.set_default_device()
     main()

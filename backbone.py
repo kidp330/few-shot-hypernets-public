@@ -8,10 +8,8 @@ import torch.nn.functional as F
 from torch.nn.utils.weight_norm import WeightNorm
 
 
-def device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
+def set_default_device():
+    torch.set_default_device('cuda' if torch.cuda.is_available() else 'cpu')
 # Basic ResNet model
 
 
@@ -36,9 +34,11 @@ class distLinear(nn.Module):
             )  # split the weight update component to direction and norm
 
         if outdim <= 200:
-            self.scale_factor = 2  # a fixed scale factor to scale the output of cos value into a reasonably large input for softmax
+            # a fixed scale factor to scale the output of cos value into a reasonably large input for softmax
+            self.scale_factor = 2
         else:
-            self.scale_factor = 10  # in omniglot, a larger scale factor is required to handle >1000 output classes.
+            # in omniglot, a larger scale factor is required to handle >1000 output classes.
+            self.scale_factor = 10
 
     def forward(self, x):
         x_norm = torch.norm(x, p=2, dim=1).unsqueeze(1).expand_as(x)
@@ -141,15 +141,16 @@ class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
         return out
 
 
-class BatchNorm2d_fw(nn.BatchNorm2d):  # used in MAML to forward input with fast weight
+# used in MAML to forward input with fast weight
+class BatchNorm2d_fw(nn.BatchNorm2d):
     def __init__(self, num_features):
         super(BatchNorm2d_fw, self).__init__(num_features)
         self.weight.fast = None
         self.bias.fast = None
 
     def forward(self, x):
-        running_mean = torch.zeros(x.data.size()[1]).to(device())
-        running_var = torch.ones(x.data.size()[1]).to(device())
+        running_mean = torch.zeros(x.data.size()[1])
+        running_var = torch.ones(x.data.size()[1])
         if self.weight.fast is not None and self.bias.fast is not None:
             out = F.batch_norm(
                 x,
@@ -223,7 +224,8 @@ class SimpleBlock(nn.Module):
                 bias=False,
             )
             self.BN1 = BatchNorm2d_fw(outdim)
-            self.C2 = Conv2d_fw(outdim, outdim, kernel_size=3, padding=1, bias=False)
+            self.C2 = Conv2d_fw(
+                outdim, outdim, kernel_size=3, padding=1, bias=False)
             self.BN2 = BatchNorm2d_fw(outdim)
         else:
             self.C1 = nn.Conv2d(
@@ -235,7 +237,8 @@ class SimpleBlock(nn.Module):
                 bias=False,
             )
             self.BN1 = nn.BatchNorm2d(outdim)
-            self.C2 = nn.Conv2d(outdim, outdim, kernel_size=3, padding=1, bias=False)
+            self.C2 = nn.Conv2d(
+                outdim, outdim, kernel_size=3, padding=1, bias=False)
             self.BN2 = nn.BatchNorm2d(outdim)
         self.relu1 = nn.ReLU(inplace=True)
         self.relu2 = nn.ReLU(inplace=True)
@@ -273,7 +276,8 @@ class SimpleBlock(nn.Module):
         out = self.C2(out)
         out = self.BN2(out)
         short_out = (
-            x if self.shortcut_type == "identity" else self.BNshortcut(self.shortcut(x))
+            x if self.shortcut_type == "identity" else self.BNshortcut(
+                self.shortcut(x))
         )
         out = out + short_out
         out = self.relu2(out)
@@ -290,7 +294,8 @@ class BottleneckBlock(nn.Module):
         self.indim = indim
         self.outdim = outdim
         if self.maml:
-            self.C1 = Conv2d_fw(indim, bottleneckdim, kernel_size=1, bias=False)
+            self.C1 = Conv2d_fw(indim, bottleneckdim,
+                                kernel_size=1, bias=False)
             self.BN1 = BatchNorm2d_fw(bottleneckdim)
             self.C2 = Conv2d_fw(
                 bottleneckdim,
@@ -300,10 +305,12 @@ class BottleneckBlock(nn.Module):
                 padding=1,
             )
             self.BN2 = BatchNorm2d_fw(bottleneckdim)
-            self.C3 = Conv2d_fw(bottleneckdim, outdim, kernel_size=1, bias=False)
+            self.C3 = Conv2d_fw(bottleneckdim, outdim,
+                                kernel_size=1, bias=False)
             self.BN3 = BatchNorm2d_fw(outdim)
         else:
-            self.C1 = nn.Conv2d(indim, bottleneckdim, kernel_size=1, bias=False)
+            self.C1 = nn.Conv2d(indim, bottleneckdim,
+                                kernel_size=1, bias=False)
             self.BN1 = nn.BatchNorm2d(bottleneckdim)
             self.C2 = nn.Conv2d(
                 bottleneckdim,
@@ -313,7 +320,8 @@ class BottleneckBlock(nn.Module):
                 padding=1,
             )
             self.BN2 = nn.BatchNorm2d(bottleneckdim)
-            self.C3 = nn.Conv2d(bottleneckdim, outdim, kernel_size=1, bias=False)
+            self.C3 = nn.Conv2d(bottleneckdim, outdim,
+                                kernel_size=1, bias=False)
             self.BN3 = nn.BatchNorm2d(outdim)
 
         self.relu = nn.ReLU()
@@ -369,7 +377,8 @@ class ConvNet(nn.Module):
         for i in range(depth):
             indim = 3 if i == 0 else 64
             outdim = 64
-            B = ConvBlock(indim, outdim, pool=(i < 4))  # only pooling for fist 4 layers
+            # only pooling for fist 4 layers
+            B = ConvBlock(indim, outdim, pool=(i < 4))
             trunk.append(B)
 
         if pool:
@@ -415,7 +424,8 @@ class ConvNetS(nn.Module):  # For omniglot, only 1 input channel, output dim is 
         for i in range(depth):
             indim = 1 if i == 0 else 64
             outdim = 64
-            B = ConvBlock(indim, outdim, pool=(i < 4))  # only pooling for fist 4 layers
+            # only pooling for fist 4 layers
+            B = ConvBlock(indim, outdim, pool=(i < 4))
             trunk.append(B)
 
         if flatten:
@@ -436,7 +446,8 @@ class ConvNetS(nn.Module):  # For omniglot, only 1 input channel, output dim is 
 
 class ConvNetSNopool(
     nn.Module
-):  # Relation net use a 4 layer conv with pooling in only first two layers, else no pooling. For omniglot, only 1 input channel, output dim is [64,5,5]
+    # Relation net use a 4 layer conv with pooling in only first two layers, else no pooling. For omniglot, only 1 input channel, output dim is [64,5,5]
+):
     def __init__(self, depth):
         super(ConvNetSNopool, self).__init__()
         trunk = []
@@ -466,10 +477,12 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         assert len(list_of_num_layers) == 4, "Can have only four stages"
         if self.maml:
-            conv1 = Conv2d_fw(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            conv1 = Conv2d_fw(3, 64, kernel_size=7, stride=2,
+                              padding=3, bias=False)
             bn1 = BatchNorm2d_fw(64)
         else:
-            conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2,
+                              padding=3, bias=False)
             bn1 = nn.BatchNorm2d(64)
 
         relu = nn.ReLU()

@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from backbone import device
 from methods.meta_template import MetaTemplate
 
 
@@ -28,7 +27,6 @@ class ProtoNet(MetaTemplate):
 
     def set_forward_loss(self, x):
         y_query = torch.from_numpy(np.repeat(range(self.n_way), self.n_query))
-        y_query = y_query.to(device())
 
         scores = self.set_forward(x)
 

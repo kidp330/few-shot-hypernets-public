@@ -2,7 +2,6 @@ import numpy as np
 import torch
 from torch import nn
 
-from backbone import device
 from data.qmul_loader import get_batch, test_people, train_people
 
 
@@ -34,7 +33,6 @@ class FeatureTransfer(nn.Module):
 
     def train_loop(self, epoch, optimizer):
         batch, batch_labels = get_batch(train_people)
-        batch, batch_labels = batch.to(device()), batch_labels.to(device())
 
         for inputs, labels in zip(batch, batch_labels):
             optimizer.zero_grad()
@@ -56,13 +54,13 @@ class FeatureTransfer(nn.Module):
         )
         query_ind = [i for i in range(19) if i not in support_ind]
 
-        x_all = inputs.to(device())
-        y_all = targets.to(device())
+        x_all = inputs
+        y_all = targets
 
-        x_support = inputs[:, support_ind, :, :, :].to(device())
-        y_support = targets[:, support_ind].to(device())
-        x_query = inputs[:, query_ind, :, :, :].to(device())
-        y_query = targets[:, query_ind].to(device())
+        x_support = inputs[:, support_ind, :, :, :]
+        y_support = targets[:, support_ind]
+        x_query = inputs[:, query_ind, :, :, :]
+        y_query = targets[:, query_ind]
 
         # choose a random test person
         n = np.random.randint(0, len(test_people) - 1)

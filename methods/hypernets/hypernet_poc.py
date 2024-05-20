@@ -7,7 +7,6 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from backbone import device
 from methods.hypernets.utils import (accuracy_from_scores, get_param_dict,
                                      set_from_param_dict)
 from methods.meta_template import MetaTemplate
@@ -50,7 +49,8 @@ class HyperNetPOC(MetaTemplate):
 
         self.embedding_size = self.init_embedding_size(params)
         self.target_net_architecture = (
-            target_net_architecture or self.build_target_net_architecture(params)
+            target_net_architecture or self.build_target_net_architecture(
+                params)
         )
         self.loss_fn = nn.CrossEntropyLoss()
         self.init_hypernet_modules()
@@ -164,8 +164,8 @@ class HyperNetPOC(MetaTemplate):
         x: [n_way, n_shot, hidden_size]
         """
         ys = torch.tensor(list(range(x.shape[0]))).reshape(len(x), 1)
-        ys = ys.repeat(1, x.shape[1]).to(x.device())
-        return ys.to(device())
+        ys = ys.repeat(1, x.shape[1])
+        return ys
 
     def maybe_aggregate_support_feature(
         self, support_feature: torch.Tensor
@@ -189,7 +189,8 @@ class HyperNetPOC(MetaTemplate):
     def build_embedding(self, support_feature: torch.Tensor) -> torch.Tensor:
         way, n_support, feat = support_feature.shape
         if self.attention_embedding:
-            features = support_feature.view(1, -1, *(support_feature.size()[2:]))
+            features = support_feature.view(
+                1, -1, *(support_feature.size()[2:]))
             attention_features = torch.flatten(
                 self.transformer_encoder.forward(features)
             )
@@ -220,7 +221,7 @@ class HyperNetPOC(MetaTemplate):
 
         tn = deepcopy(self.target_net_architecture)
         set_from_param_dict(tn, network_params)
-        return tn.to(device())
+        return tn
 
     def set_forward(
         self,
@@ -243,7 +244,7 @@ class HyperNetPOC(MetaTemplate):
         y_pred = classifier(query_feature)
 
         if permutation_sanity_check:
-            ### random permutation test
+            # random permutation test
             perm = torch.randperm(len(query_feature))
             rev_perm = torch.argsort(perm)
             query_perm = query_feature[perm]
@@ -285,7 +286,8 @@ class HyperNetPOC(MetaTemplate):
     ):
         n_way, n_examples, c, h, w = x.shape
 
-        support_feature, query_feature = self.parse_feature(x, is_feature=False)
+        support_feature, query_feature = self.parse_feature(
+            x, is_feature=False)
 
         if self.attention_embedding:
             y_support = self.get_labels(support_feature)
@@ -315,7 +317,8 @@ class HyperNetPOC(MetaTemplate):
                 )
             )
             y_support = self.get_labels(support_feature)
-            y_to_classify_gt.append(y_support.reshape(self.n_way * self.n_support))
+            y_to_classify_gt.append(
+                y_support.reshape(self.n_way * self.n_support))
         if train_on_query:
             feature_to_classify.append(
                 query_feature.reshape(
@@ -353,9 +356,9 @@ class HyperNetPOC(MetaTemplate):
 
             # TODO 3: perhaps the idea of tasksets is redundant and it's better to update weights at every task
             if i % self.taskset_size == (self.taskset_size - 1) or i == (n_train - 1):
-                loss_sum = torch.tensor(0).to(device())
+                loss_sum = torch.tensor(0)
                 for tr in range(ts_repeats):
-                    loss_sum = torch.tensor(0).to(device())
+                    loss_sum = torch.tensor(0)
 
                     for task in taskset:
                         if self.change_way:
@@ -376,13 +379,15 @@ class HyperNetPOC(MetaTemplate):
                     optimizer.step()
 
                 losses.append(loss_sum.item())
-                accuracies.extend([self.query_accuracy(task) for task in taskset])
+                accuracies.extend([self.query_accuracy(task)
+                                  for task in taskset])
                 acc_mean = np.mean(accuracies) * 100
                 acc_std = np.std(accuracies) * 100
 
                 if taskset_id % self.taskset_print_every == 0:
                     print(
-                        f"Epoch {epoch} | Taskset {taskset_id} | TS {len(taskset)} | TS epochs {ts_repeats} | Loss {loss_sum.item()} | Train acc {acc_mean:.2f} +- {acc_std:.2f} %"
+                        f"Epoch {epoch} | Taskset {taskset_id} | TS {len(taskset)} | TS epochs {ts_repeats} | Loss {
+                            loss_sum.item()} | Train acc {acc_mean:.2f} +- {acc_std:.2f} %"
                     )
 
                 taskset_id += 1
@@ -457,7 +462,8 @@ class HypernetPPA(PPAMixin, HyperNetPOC):
     def build_embedding(self, support_feature: torch.Tensor) -> torch.Tensor:
         way, n_support, feat = support_feature.shape
         if self.attention_embedding:
-            features = support_feature.view(1, -1, *(support_feature.size()[2:]))
+            features = support_feature.view(
+                1, -1, *(support_feature.size()[2:]))
             attention_features = torch.flatten(
                 self.transformer_encoder.forward(features)
             )

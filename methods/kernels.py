@@ -176,7 +176,8 @@ class NNKernelNoInner(gpytorch.kernels.Kernel):
 
     def create_model(self):
         assert self.num_layers >= 1, "Number of hidden layers must be at least 1"
-        modules = [PositiveLinear(self.input_dim, self.hidden_dim), nn.Sigmoid()]
+        modules = [PositiveLinear(
+            self.input_dim, self.hidden_dim), nn.Sigmoid()]
         if self.flatten:
             modules = [nn.Flatten()] + modules
         for i in range(self.num_layers - 1):
@@ -219,7 +220,7 @@ class NNKernelNoInner(gpytorch.kernels.Kernel):
         else:
             n = x1.shape[0]
             m = x2.shape[0]
-            out = torch.zeros((n, m), device=x1.get_device())
+            out = torch.zeros((n, m))
 
             for i in range(n):
                 for j in range(i + 1):
@@ -283,7 +284,7 @@ class MultiNNKernel(gpytorch.kernels.Kernel):
             n = x1.shape[0]
             m = x2.shape[0]
             out = torch.zeros(
-                (n * self.num_tasks, m * self.num_tasks), device=x1.get_device()
+                (n * self.num_tasks, m * self.num_tasks)
             )
             for i in range(self.num_tasks):
                 for j in range(self.num_tasks):
@@ -291,8 +292,8 @@ class MultiNNKernel(gpytorch.kernels.Kernel):
                     z2 = self.kernels[j].model(x2)
 
                     out[
-                        i : n * self.num_tasks : self.num_tasks,
-                        j : m * self.num_tasks : self.num_tasks,
+                        i: n * self.num_tasks: self.num_tasks,
+                        j: m * self.num_tasks: self.num_tasks,
                     ] = torch.matmul(z1, z2.T)
             if diag:
                 return torch.diag(out)

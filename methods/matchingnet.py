@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 
 import utils
-from backbone import device
 from methods.meta_template import MetaTemplate
 
 
@@ -29,7 +28,7 @@ class MatchingNet(MetaTemplate):
             G_encoder = self.G_encoder
         out_G = G_encoder(S.unsqueeze(0))[0]
         out_G = out_G.squeeze(0)
-        G = S + out_G[:, : S.size(1)] + out_G[:, S.size(1) :]
+        G = S + out_G[:, : S.size(1)] + out_G[:, S.size(1):]
         G_norm = torch.norm(G, p=2, dim=1).unsqueeze(1).expand_as(G)
         G_normalized = G.div(G_norm + 0.00001)
         return G, G_normalized
@@ -56,23 +55,18 @@ class MatchingNet(MetaTemplate):
         G, G_normalized = self.encode_training_set(z_support)
 
         y_s = torch.from_numpy(np.repeat(range(self.n_way), self.n_support))
-        Y_S = utils.one_hot(y_s, self.n_way).to(device())
+        Y_S = utils.one_hot(y_s, self.n_way)
         f = z_query
         logprobs = self.get_logprobs(f, G, G_normalized, Y_S)
         return logprobs
 
     def set_forward_loss(self, x):
         y_query = torch.from_numpy(np.repeat(range(self.n_way), self.n_query))
-        y_query = y_query.to(device())
+        y_query = y_query
 
         logprobs = self.set_forward(x)
 
         return self.loss_fn(logprobs, y_query)
-
-    def cuda(self):
-        super().to(device())
-        self.FCE = self.FCE.to(device())
-        return self
 
 
 class FullyContextualEmbedding(nn.Module):
@@ -99,8 +93,3 @@ class FullyContextualEmbedding(nn.Module):
             h = h + f
 
         return h
-
-    def cuda(self):
-        super().to(device())
-        self.c_0 = self.c_0.to(device())
-        return self

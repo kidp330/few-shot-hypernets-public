@@ -1,12 +1,11 @@
-## Original packages
+# Original packages
 
-## Our packages
+# Our packages
 import gpytorch
 import numpy as np
 import torch
 import torch.nn as nn
 
-from backbone import device
 from configs import kernel_type
 from data.qmul_loader import get_batch, test_people, train_people
 
@@ -14,26 +13,26 @@ from data.qmul_loader import get_batch, test_people, train_people
 class DKT(nn.Module):
     def __init__(self, backbone):
         super().__init__()
-        ## GP parameters
+        # GP parameters
         self.feature_extractor = backbone
         self.get_model_likelihood_mll()  # Init model, likelihood, and mll
 
     def get_model_likelihood_mll(self, train_x=None, train_y=None):
         if train_x is None:
-            train_x = torch.ones(19, 2916).to(device())
+            train_x = torch.ones(19, 2916)
         if train_y is None:
-            train_y = torch.ones(19).to(device())
+            train_y = torch.ones(19)
 
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         model = ExactGPLayer(
             train_x=train_x, train_y=train_y, likelihood=likelihood, kernel=kernel_type
         )
 
-        self.model = model.to(device())
-        self.likelihood = likelihood.to(device())
+        self.model = model
+        self.likelihood = likelihood
         self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(
             self.likelihood, self.model
-        ).to(device())
+        )
         self.mse = nn.MSELoss()
 
         return self.model, self.likelihood, self.mll
@@ -46,7 +45,6 @@ class DKT(nn.Module):
 
     def train_loop(self, epoch, optimizer):
         batch, batch_labels = get_batch(train_people)
-        batch, batch_labels = batch.to(device()), batch_labels.to(device())
         for inputs, labels in zip(batch, batch_labels):
             optimizer.zero_grad()
             z = self.feature_extractor(inputs)
@@ -78,19 +76,20 @@ class DKT(nn.Module):
         )
         query_ind = [i for i in range(19) if i not in support_ind]
 
-        x_all = inputs.to(device())
-        y_all = targets.to(device())
+        x_all = inputs
+        y_all = targets
 
-        x_support = inputs[:, support_ind, :, :, :].to(device())
-        y_support = targets[:, support_ind].to(device())
+        x_support = inputs[:, support_ind, :, :, :]
+        y_support = targets[:, support_ind]
         x_query = inputs[:, query_ind, :, :, :]
-        y_query = targets[:, query_ind].to(device())
+        y_query = targets[:, query_ind]
 
         # choose a random test person
         n = np.random.randint(0, len(test_people) - 1)
 
         z_support = self.feature_extractor(x_support[n]).detach()
-        self.model.set_train_data(inputs=z_support, targets=y_support[n], strict=False)
+        self.model.set_train_data(
+            inputs=z_support, targets=y_support[n], strict=False)
 
         self.model.eval()
         self.feature_extractor.eval()
@@ -136,12 +135,12 @@ class ExactGPLayer(gpytorch.models.ExactGP):
         super().__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.ConstantMean()
 
-        ## RBF kernel
+        # RBF kernel
         if kernel == "rbf" or kernel == "RBF":
             self.covar_module = gpytorch.kernels.ScaleKernel(
                 gpytorch.kernels.RBFKernel()
             )
-        ## Spectral kernel
+        # Spectral kernel
         elif kernel == "spectral":
             self.covar_module = gpytorch.kernels.SpectralMixtureKernel(
                 num_mixtures=4, ard_num_dims=2916

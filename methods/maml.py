@@ -11,8 +11,8 @@ from methods.meta_template import MetaTemplate
 
 
 class MAML(MetaTemplate):
-    def __init__(self, model_func, n_way, n_support, _n_query, params, approx=False):
-        super().__init__(model_func, n_way, n_support, change_way=False)
+    def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
+        super().__init__(model_func, n_way, n_support, n_query, change_way=False)
 
         self.loss_fn = nn.CrossEntropyLoss()
         self.classifier = backbone.Linear_fw(self.feat_dim, n_way)
@@ -38,13 +38,11 @@ class MAML(MetaTemplate):
             .view(self.n_way * self.n_support, *x.size()[2:])
         )  # support data
         x_b_i = (
-            x[:, self.n_support :, :, :, :]
+            x[:, self.n_support:, :, :, :]
             .contiguous()
             .view(self.n_way * self.n_query, *x.size()[2:])
         )  # query data
-        y_a_i = torch.repeat_interleave(
-            range(self.n_way), self.n_support
-        )  # label for support data
+        y_a_i = self.support_labels()  # label for support data
 
         if self.maml_adapt_classifier:
             fast_parameters = list(self.classifier.parameters())
@@ -78,7 +76,8 @@ class MAML(MetaTemplate):
             for k, weight in enumerate(parameters):
                 # for usage of weight.fast, please see Linear_fw, Conv_fw in backbone.py
                 if weight.fast is None:
-                    weight.fast = weight - self.train_lr * grad[k]  # create weight.fast
+                    weight.fast = weight - self.train_lr * \
+                        grad[k]  # create weight.fast
                 else:
                     weight.fast = (
                         weight.fast - self.train_lr * grad[k]
@@ -90,14 +89,15 @@ class MAML(MetaTemplate):
         scores = self.forward(x_b_i)
         return scores
 
-    def set_forward_adaptation(self, x, is_feature=False):  # overwrite parrent function
+    # overwrite parrent function
+    def set_forward_adaptation(self, x, is_feature=False):
         raise ValueError(
             "MAML performs further adapation simply by increasing task_upate_num"
         )
 
     def set_forward_loss(self, x):
         scores = self.set_forward(x, is_feature=False)
-        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
+        query_data_labels = self.query_labels()
         loss = self.loss_fn(scores, query_data_labels)
 
         _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)

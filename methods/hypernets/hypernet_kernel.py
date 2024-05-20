@@ -4,7 +4,6 @@ from typing import Optional, Tuple
 import torch
 from torch import nn
 
-from backbone import device
 from methods.hypernets import HyperNetPOC
 from methods.hypernets.utils import accuracy_from_scores, set_from_param_dict
 from methods.kernel_convolutions import KernelConv
@@ -63,7 +62,8 @@ class HyperShot(HyperNetPOC):
 
         self.query_relations_size = self.n_way * self.n_support_size_context
         self.target_net_architecture = (
-            target_net_architecture or self.build_target_net_architecture(params)
+            target_net_architecture or self.build_target_net_architecture(
+                params)
         )
         self.init_hypernet_modules()
 
@@ -106,7 +106,8 @@ class HyperShot(HyperNetPOC):
         tn_hidden_size = params.hn_tn_hidden_size
         layers = []
         if params.hn_use_support_embeddings:
-            common_insize = (self.n_way * self.n_support_size_context) + self.feat_dim
+            common_insize = (
+                self.n_way * self.n_support_size_context) + self.feat_dim
         else:
             common_insize = self.n_way * self.n_support_size_context
 
@@ -168,7 +169,8 @@ class HyperShot(HyperNetPOC):
     ) -> torch.Tensor:
         supp_way, n_support, supp_feat = support_feature.shape
         n_examples, feat_dim = feature_to_classify.shape
-        support_features = support_feature.reshape(supp_way * n_support, supp_feat)
+        support_features = support_feature.reshape(
+            supp_way * n_support, supp_feat)
 
         kernel_values_tensor = self.kernel_function.forward(
             support_features, feature_to_classify
@@ -186,7 +188,8 @@ class HyperShot(HyperNetPOC):
         """
 
         supp_way, n_support, supp_feat = support_feature.shape
-        support_features = support_feature.reshape(supp_way * n_support, supp_feat)
+        support_features = support_feature.reshape(
+            supp_way * n_support, supp_feat)
         support_features_copy = torch.clone(support_features)
 
         kernel_values_tensor = self.kernel_function.forward(
@@ -195,17 +198,18 @@ class HyperShot(HyperNetPOC):
 
         # Remove self relations by matrix multiplication
         if self.hn_no_self_relations:
-            zero_diagonal_matrix = torch.ones_like(kernel_values_tensor).to(
-                device()
-            ) - torch.eye(kernel_values_tensor.shape[0]).to(device())
+            zero_diagonal_matrix = torch.ones_like(
+                kernel_values_tensor) - torch.eye(kernel_values_tensor.shape[0])
             kernel_values_tensor = kernel_values_tensor * zero_diagonal_matrix
             return torch.flatten(kernel_values_tensor[kernel_values_tensor != 0.0])
 
         if self.hn_kernel_invariance:
             # TODO - check!!!
             if self.hn_kernel_invariance_type == "attention":
-                kernel_values_tensor = torch.unsqueeze(kernel_values_tensor.T, 0)
-                encoded = self.kernel_transformer_encoder.forward(kernel_values_tensor)
+                kernel_values_tensor = torch.unsqueeze(
+                    kernel_values_tensor.T, 0)
+                encoded = self.kernel_transformer_encoder.forward(
+                    kernel_values_tensor)
 
                 if self.hn_kernel_invariance_pooling == "min":
                     invariant_kernel_values, _ = torch.min(encoded, 1)
@@ -237,7 +241,8 @@ class HyperShot(HyperNetPOC):
         embedding = embedding.reshape(1, self.embedding_size)
         # TODO - check!!!
         if self.hn_use_support_embeddings:
-            embedding = torch.cat((embedding, torch.flatten(support_feature)), 0)
+            embedding = torch.cat(
+                (embedding, torch.flatten(support_feature)), 0)
 
         root = self.hypernet_neck(embedding)
         network_params = {
@@ -249,7 +254,7 @@ class HyperShot(HyperNetPOC):
         tn = deepcopy(self.target_net_architecture)
         set_from_param_dict(tn, network_params)
         tn.support_feature = support_feature
-        return tn.to(device())
+        return tn
 
     def set_forward(
         self,
@@ -273,12 +278,14 @@ class HyperShot(HyperNetPOC):
         y_pred = classifier(relational_query_feature)
 
         if permutation_sanity_check:
-            ### random permutation test
+            # random permutation test
             perm = torch.randperm(len(query_feature))
             rev_perm = torch.argsort(perm)
             query_perm = query_feature[perm]
-            relation_perm = self.build_relations_features(support_feature, query_perm)
-            assert torch.equal(relation_perm[rev_perm], relational_query_feature)
+            relation_perm = self.build_relations_features(
+                support_feature, query_perm)
+            assert torch.equal(
+                relation_perm[rev_perm], relational_query_feature)
             y_pred_perm = classifier(relation_perm)
             assert torch.equal(y_pred_perm[rev_perm], y_pred)
 
@@ -286,7 +293,8 @@ class HyperShot(HyperNetPOC):
 
     def set_forward_with_adaptation(self, x: torch.Tensor):
         y_pred, metrics = super().set_forward_with_adaptation(x)
-        support_feature, query_feature = self.parse_feature(x, is_feature=False)
+        support_feature, query_feature = self.parse_feature(
+            x, is_feature=False)
         query_feature = query_feature.reshape(-1, query_feature.shape[-1])
         relational_query_feature = self.build_relations_features(
             support_feature, query_feature
@@ -306,7 +314,8 @@ class HyperShot(HyperNetPOC):
     ):
         nw, ne, c, h, w = x.shape
 
-        support_feature, query_feature = self.parse_feature(x, is_feature=False)
+        support_feature, query_feature = self.parse_feature(
+            x, is_feature=False)
 
         # TODO: add/check changes for attention-like input
         if self.attention_embedding:
@@ -317,9 +326,11 @@ class HyperShot(HyperNetPOC):
                 (support_feature, y_support_one_hot), 2
             )
             y_query_zeros = torch.zeros(
-                (y_query.shape[0], y_query.shape[1], y_support_one_hot.shape[2])
+                (y_query.shape[0], y_query.shape[1],
+                 y_support_one_hot.shape[2])
             )
-            query_feature_with_zeros = torch.cat((query_feature, y_query_zeros), 2)
+            query_feature_with_zeros = torch.cat(
+                (query_feature, y_query_zeros), 2)
             feature_to_hn = (
                 support_feature_with_classes_one_hot.detach()
                 if detach_ft_hn
@@ -350,11 +361,13 @@ class HyperShot(HyperNetPOC):
         if train_on_query:
             feature_to_classify.append(
                 query_feature.reshape(
-                    (self.n_way * (ne - self.n_support)), query_feature.shape[-1]
+                    (self.n_way * (ne - self.n_support)
+                     ), query_feature.shape[-1]
                 )
             )
             y_query = self.get_labels(query_feature)
-            y_to_classify_gt.append(y_query.reshape(self.n_way * (ne - self.n_support)))
+            y_to_classify_gt.append(y_query.reshape(
+                self.n_way * (ne - self.n_support)))
 
         feature_to_classify = torch.cat(feature_to_classify)
         y_to_classify_gt = torch.cat(y_to_classify_gt)

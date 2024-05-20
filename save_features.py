@@ -4,25 +4,24 @@ import h5py
 
 import configs
 import backbone
-from backbone import device
 from data.datamgr import SimpleDataManager
 from methods.hypernets import hypernet_types
 from io_utils import model_dict, parse_args, get_resume_file, get_best_file, get_assigned_file
 
 
-def save_features(model, data_loader, outfile ):
+def save_features(model, data_loader, outfile):
     f = h5py.File(outfile, 'w')
     max_count = len(data_loader)*data_loader.batch_size
-    all_labels = f.create_dataset('all_labels',(max_count,), dtype='i')
-    all_feats=None
-    count=0
-    for i, (x,y) in enumerate(data_loader):
-        if i%10 == 0:
+    all_labels = f.create_dataset('all_labels', (max_count,), dtype='i')
+    all_feats = None
+    count = 0
+    for i, (x, y) in enumerate(data_loader):
+        if i % 10 == 0:
             print('{:d}/{:d}'.format(i, len(data_loader)))
-        x = x.to(device())
         feats = model(x)
         if all_feats is None:
-            all_feats = f.create_dataset('all_feats', [max_count] + list( feats.size()[1:]) , dtype='f')
+            all_feats = f.create_dataset(
+                'all_feats', [max_count] + list(feats.size()[1:]), dtype='f')
         all_feats[count:count+feats.size(0)] = feats.data.cpu().numpy()
         all_labels[count:count+feats.size(0)] = y.cpu().numpy()
         count = count + feats.size(0)
@@ -31,6 +30,7 @@ def save_features(model, data_loader, outfile ):
     count_var[0] = count
 
     f.close()
+
 
 def do_save_fts(params):
     illegal_models = [
@@ -64,7 +64,8 @@ def do_save_fts(params):
     else:
         loadfile = configs.data_dir[params.dataset] + split + '.json'
 
-    checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (configs.save_dir, params.dataset, params.model, params.method)
+    checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (
+        configs.save_dir, params.dataset, params.model, params.method)
     if params.train_aug:
         checkpoint_dir += '_aug'
     if not params.method in ['baseline', 'baseline++']:
@@ -86,7 +87,8 @@ def do_save_fts(params):
         outfile = os.path.join(checkpoint_dir.replace("checkpoints", "features"),
                                split + "_" + str(params.save_iter) + ".hdf5")
     else:
-        outfile = os.path.join(checkpoint_dir.replace("checkpoints", "features"), split + ".hdf5")
+        outfile = os.path.join(checkpoint_dir.replace(
+            "checkpoints", "features"), split + ".hdf5")
 
     datamgr = SimpleDataManager(image_size, batch_size=64)
     data_loader = datamgr.get_data_loader(loadfile, aug=False)
@@ -105,7 +107,6 @@ def do_save_fts(params):
     else:
         model = model_dict[params.model]()
 
-    model = model.to(device())
     tmp = torch.load(modelfile)
     state = tmp['state']
     state_keys = list(state.keys())
@@ -124,6 +125,7 @@ def do_save_fts(params):
     if not os.path.isdir(dirname):
         os.makedirs(dirname)
     save_features(model, data_loader, outfile)
+
 
 if __name__ == '__main__':
     params = parse_args('save_features')

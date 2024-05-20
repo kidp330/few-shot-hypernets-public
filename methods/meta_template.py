@@ -6,18 +6,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from backbone import device
+from torch import Tensor
 
 
 class MetaTemplate(nn.Module):
-    def __init__(self, model_func, n_way, n_support, change_way=True):
+    def __init__(self, model_func, n_way, n_support, n_query, change_way=True):
         super().__init__()
         self.n_way = n_way
         self.n_support = n_support
         self.n_query = -1  # (change depends on input)
         self.feature = model_func()
         self.feat_dim = self.feature.final_feat_dim
-        self.change_way = change_way  # some methods allow different_way classification during training and test
+        # some methods allow different_way classification during training and test
+        self.change_way = change_way
 
     @abstractmethod
     def set_forward(self, x, is_feature=False):
@@ -32,7 +33,6 @@ class MetaTemplate(nn.Module):
         return out
 
     def parse_feature(self, x, is_feature) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = x.to(device())
         if is_feature:
             z_all = x
         else:
@@ -42,7 +42,7 @@ class MetaTemplate(nn.Module):
             z_all = self.feature.forward(x)
             z_all = z_all.view(self.n_way, self.n_support + self.n_query, -1)
         z_support = z_all[:, : self.n_support]
-        z_query = z_all[:, self.n_support :]
+        z_query = z_all[:, self.n_support:]
 
         return z_support, z_query
 
@@ -106,7 +106,8 @@ class MetaTemplate(nn.Module):
             count_this = len(y_query)
             acc_all.append(correct_this / count_this * 100)
 
-        metrics = {k: np.mean(v) if len(v) > 0 else 0 for (k, v) in acc_at.items()}
+        metrics = {k: np.mean(v) if len(
+            v) > 0 else 0 for (k, v) in acc_at.items()}
 
         acc_all = np.asarray(acc_all)
         acc_mean = np.mean(acc_all)
@@ -130,11 +131,10 @@ class MetaTemplate(nn.Module):
         z_support = z_support.contiguous().view(self.n_way * self.n_support, -1)
         z_query = z_query.contiguous().view(self.n_way * self.n_query, -1)
 
-        y_support = torch.from_numpy(np.repeat(range(self.n_way), self.n_support))
-        y_support = y_support.to(device())
+        y_support = torch.from_numpy(
+            np.repeat(range(self.n_way), self.n_support))
 
         linear_clf = nn.Linear(self.feat_dim, self.n_way)
-        linear_clf = linear_clf.to(device())
 
         set_optimizer = torch.optim.SGD(
             linear_clf.parameters(),
@@ -145,7 +145,6 @@ class MetaTemplate(nn.Module):
         )
 
         loss_function = nn.CrossEntropyLoss()
-        loss_function = loss_function.to(device())
 
         batch_size = 4
         support_size = self.n_way * self.n_support
@@ -154,8 +153,8 @@ class MetaTemplate(nn.Module):
             for i in range(0, support_size, batch_size):
                 set_optimizer.zero_grad()
                 selected_id = torch.from_numpy(
-                    rand_id[i : min(i + batch_size, support_size)]
-                ).to(device())
+                    rand_id[i: min(i + batch_size, support_size)]
+                )
                 z_batch = z_support[selected_id]
                 y_batch = y_support[selected_id]
                 scores = linear_clf(z_batch)
@@ -165,3 +164,12 @@ class MetaTemplate(nn.Module):
 
         scores = linear_clf(z_query)
         return scores
+
+    def _make_labels(self, n_set_length: int) -> Tensor:
+        return torch.repeat_interleave(torch.arange(self.n_way), n_set_length)
+
+    def query_labels(self) -> Tensor:
+        return self._make_labels(self.n_query)
+
+    def support_labels(self) -> Tensor:
+        return self._make_labels(self.n_support)
