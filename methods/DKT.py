@@ -30,8 +30,8 @@ except ImportError:
 
 
 class DKT(MetaTemplate):
-    def __init__(self, model_func, n_way, n_support):
-        super(DKT, self).__init__(model_func, n_way, n_support)
+    def __init__(self, model_func, n_way, n_support, n_query):
+        super(DKT, self).__init__(model_func, n_way, n_support, n_query)
         # GP parameters
         self.leghtscale_list = None
         self.noise_list = None

@@ -1,6 +1,8 @@
 # This code is modified from https://github.com/dragen1860/MAML-Pytorch and https://github.com/katerakelly/pytorch-maml
 
 from time import time
+from typing import Any
+from torch import Tensor
 
 import numpy as np
 import torch
@@ -25,24 +27,16 @@ class MAML(MetaTemplate):
         self.train_lr = 0.01
         self.approx = approx  # first order approx.
 
-    def forward(self, x):
+    # @override MetaTemplate
+    def forward(self, x) -> Tensor:
         out = self.feature.forward(x)
         scores = self.classifier.forward(out)
         return scores
 
-    def set_forward(self, x, is_feature=False):
-        assert is_feature is False, "MAML does not support fixed feature"
-        x_a_i = (
-            x[:, : self.n_support, :, :, :]
-            .contiguous()
-            .view(self.n_way * self.n_support, *x.size()[2:])
-        )  # support data
-        x_b_i = (
-            x[:, self.n_support:, :, :, :]
-            .contiguous()
-            .view(self.n_way * self.n_query, *x.size()[2:])
-        )  # query data
-        y_a_i = self.support_labels()  # label for support data
+    # @override MetaTemplate
+
+    def set_forward_loss(self, x):
+        x_support, x_query = self._split_set(x)
 
         if self.maml_adapt_classifier:
             fast_parameters = list(self.classifier.parameters())
@@ -56,10 +50,126 @@ class MAML(MetaTemplate):
                 weight.fast = None
 
         self.zero_grad()
+        self._maml_adapt(x_support)
+
+        scores = self.forward(x_query)
+        query_data_labels = self.query_labels()
+        loss = self.loss_fn(scores, query_data_labels)
+
+        return loss, scores
+
+    def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
+        print_freq = 10
+        avg_loss = 0
+        task_count = 0
+        loss_all = []
+        acc_all = []
+
+        # train
+        for i, (x, _) in enumerate(train_loader):
+            self.n_query = x.size(1) - self.n_support
+            assert self.n_way == x.size(0), "MAML do not support way change"
+
+            optimizer.zero_grad()
+
+            loss, scores = self.set_forward_loss(x)
+            task_accuracy = self._task_accuracy(scores, self.query_labels())
+            avg_loss += loss.item()  # .data[0]
+            loss_all.append(loss)
+            acc_all.append(task_accuracy)
+
+            task_count += 1
+
+            # each iteration is one task
+            # after n_task iterations we aggregate the independent losses together and update target loss
+            # this should be a nested loop instead of the way its done here though...
+            # and I don't approve of multiplying num_epochs for MAML exclusively, it gets confusing
+            if task_count == self.n_task:  # MAML update several tasks at one time
+                loss_q = torch.stack(loss_all).sum(0)
+                loss_q.backward()
+
+                optimizer.step()
+                task_count = 0
+                loss_all = []
+            if i % print_freq == 0:
+                print(
+                    "Epoch {:d} | Batch {:d}/{:d} | Loss {:f}".format(
+                        epoch, i, len(train_loader), avg_loss / float(i + 1)
+                    )
+                )
+
+        acc_all = np.asarray(acc_all)
+        acc_mean = np.mean(acc_all)
+
+        metrics = {"accuracy/train": acc_mean}
+
+        return metrics
+
+    # shouldn't test also perform adaptation? It's definitely missing here
+    def test_loop(
+        self, test_loader, return_std=False, return_time: bool = False
+    ):  # overwrite parrent function
+        _correct = 0
+        _count = 0
+        acc_all = []
+        eval_time = 0
+        iter_num = len(test_loader)
+        for i, (x, _) in enumerate(test_loader):
+            self.n_query = x.size(1) - self.n_support
+            assert self.n_way == x.size(0), "MAML do not support way change"
+            s = time()
+            scores = self.set_forward(x)
+            t = time()
+            eval_time += t - s
+            task_accuracy = self._task_accuracy(scores, self.query_labels())
+            acc_all.append(task_accuracy)
+
+        num_tasks = len(acc_all)
+        acc_all = np.asarray(acc_all)
+        acc_mean = np.mean(acc_all)
+        acc_std = np.std(acc_all)
+        print(
+            "%d Test Acc = %4.2f%% +- %4.2f%%"
+            % (iter_num, acc_mean, 1.96 * acc_std / np.sqrt(iter_num))
+        )
+        print("Num tasks", num_tasks)
+
+        ret: list[Any] = [acc_mean]
+        if return_std:
+            ret.append(acc_std)
+        if return_time:
+            ret.append(eval_time)
+        ret.append({})
+
+        return ret
+
+    def _task_accuracy(self, out: Tensor, y_true: Tensor) -> float:
+        _max_scores, max_labels = torch.max(out, dim=1)
+        max_labels = max_labels.flatten()
+        correct_preds_count = torch.sum(max_labels == y_true)
+        task_accuracy = (correct_preds_count / len(y_true)) * 100
+        return task_accuracy.item()
+
+    def _split_set(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        x_support = (
+            x[:, : self.n_support, :, :, :]
+            .contiguous()
+            .view(self.n_way * self.n_support, *x.size()[2:])
+        )
+        x_query = (
+            x[:, self.n_support:, :, :, :]
+            .contiguous()
+            .view(self.n_way * self.n_query, *x.size()[2:])
+        )
+
+        return x_support, x_query
+
+    def _maml_adapt(self, x_support: Tensor):
+        y_support = self.support_labels()
 
         for _task_step in list(range(self.task_update_num)):
-            scores = self.forward(x_a_i)
-            set_loss = self.loss_fn(scores, y_a_i)
+            scores = self.forward(x_support)
+            set_loss = self.loss_fn(scores, y_support)
             grad = torch.autograd.grad(
                 set_loss, fast_parameters, create_graph=True
             )  # build full graph support gradient of gradient
@@ -85,108 +195,3 @@ class MAML(MetaTemplate):
                 fast_parameters.append(
                     weight.fast
                 )  # gradients calculated in line 45 are based on newest fast weight, but the graph will retain the link to old weight.fasts
-
-        scores = self.forward(x_b_i)
-        return scores
-
-    # overwrite parrent function
-    def set_forward_adaptation(self, x, is_feature=False):
-        raise ValueError(
-            "MAML performs further adapation simply by increasing task_upate_num"
-        )
-
-    def set_forward_loss(self, x):
-        scores = self.set_forward(x, is_feature=False)
-        query_data_labels = self.query_labels()
-        loss = self.loss_fn(scores, query_data_labels)
-
-        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
-        topk_ind = topk_labels.cpu().numpy().flatten()
-        y_labels = query_data_labels.cpu().numpy()
-        top1_correct = np.sum(topk_ind == y_labels)
-        task_accuracy = (top1_correct / len(query_data_labels)) * 100
-
-        return loss, task_accuracy
-
-    def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
-        print_freq = 10
-        avg_loss = 0
-        task_count = 0
-        loss_all = []
-        acc_all = []
-        optimizer.zero_grad()
-
-        # train
-        for i, (x, _) in enumerate(train_loader):
-            self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML do not support way change"
-
-            loss, task_accuracy = self.set_forward_loss(x)
-            avg_loss = avg_loss + loss.item()  # .data[0]
-            loss_all.append(loss)
-            acc_all.append(task_accuracy)
-
-            task_count += 1
-
-            if task_count == self.n_task:  # MAML update several tasks at one time
-                loss_q = torch.stack(loss_all).sum(0)
-                loss_q.backward()
-
-                optimizer.step()
-                task_count = 0
-                loss_all = []
-            optimizer.zero_grad()
-            if i % print_freq == 0:
-                print(
-                    "Epoch {:d} | Batch {:d}/{:d} | Loss {:f}".format(
-                        epoch, i, len(train_loader), avg_loss / float(i + 1)
-                    )
-                )
-
-        acc_all = np.asarray(acc_all)
-        acc_mean = np.mean(acc_all)
-
-        metrics = {"accuracy/train": acc_mean}
-
-        return metrics
-
-    def test_loop(
-        self, test_loader, return_std=False, return_time: bool = False
-    ):  # overwrite parrent function
-        _correct = 0
-        _count = 0
-        acc_all = []
-        eval_time = 0
-        iter_num = len(test_loader)
-        for i, (x, _) in enumerate(test_loader):
-            self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML do not support way change"
-            s = time()
-            correct_this, count_this = self.correct(x)
-            t = time()
-            eval_time += t - s
-            acc_all.append(correct_this / count_this * 100)
-
-        num_tasks = len(acc_all)
-        acc_all = np.asarray(acc_all)
-        acc_mean = np.mean(acc_all)
-        acc_std = np.std(acc_all)
-        print(
-            "%d Test Acc = %4.2f%% +- %4.2f%%"
-            % (iter_num, acc_mean, 1.96 * acc_std / np.sqrt(iter_num))
-        )
-        print("Num tasks", num_tasks)
-
-        ret = [acc_mean]
-        if return_std:
-            ret.append(acc_std)
-        if return_time:
-            ret.append(eval_time)
-        ret.append({})
-
-        return ret
-
-    def get_logits(self, x):
-        self.n_query = x.size(1) - self.n_support
-        logits = self.set_forward(x)
-        return logits
