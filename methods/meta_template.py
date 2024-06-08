@@ -1,17 +1,19 @@
 from abc import abstractmethod
 from collections import defaultdict
-from typing import Tuple
+from typing import Callable, Tuple
 from torch import Tensor
 
 import numpy as np
 import torch
 import torch.nn as nn
 
+from modules.module import MetaModule
+
 # policy should be no default implementations in template, lest they be actually obvious
 
 
-class MetaTemplate(nn.Module):
-    def __init__(self, model_func, n_way, n_support, n_query, change_way=True):
+class MetaTemplate(MetaModule):
+    def __init__(self, model_func: Callable[[], MetaModule], n_way, n_support, n_query, change_way=True):
         super().__init__()
         self.n_way = n_way
         self.n_support = n_support
@@ -33,7 +35,7 @@ class MetaTemplate(nn.Module):
         )
 
     @abstractmethod
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, params=None) -> Tensor:
         raise ValueError(
             "MAML performs further adapation simply by increasing task_upate_num"
         )

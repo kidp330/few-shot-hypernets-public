@@ -1,58 +1,58 @@
 # This code is modified from https://github.com/dragen1860/MAML-Pytorch and https://github.com/katerakelly/pytorch-maml
-
+from copy import deepcopy
 from time import time
-from typing import Any
+from typing import Any, Callable, Generator, Iterable, Iterator
 from torch import Tensor
+from torch.nn.parameter import Parameter
 
 import numpy as np
 import torch
 from torch import nn
 
-import backbone
 from methods.meta_template import MetaTemplate
+from modules.linear import MetaLinear
 
 
 class MAML(MetaTemplate):
     def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
         super().__init__(model_func, n_way, n_support, n_query, change_way=False)
 
-        self.loss_fn = nn.CrossEntropyLoss()
-        self.classifier = backbone.Linear_fw(self.feat_dim, n_way)
+        self.loss_fn: Callable[[Tensor, Tensor],
+                               Tensor] = nn.CrossEntropyLoss()
+        self.classifier = MetaLinear(self.feat_dim, n_way)
+
+        # initializes bias to 0 but doesn't touch weights, why?
         self.classifier.bias.data.fill_(0)
 
-        self.maml_adapt_classifier = params.maml_adapt_classifier
+        self.maml_only_adapt_classifier = params.maml_only_adapt_classifier
 
         self.n_task = 4
         self.task_update_num = 5
         self.train_lr = 0.01
         self.approx = approx  # first order approx.
 
+    def _hyperparameters(self):
+        return {
+            'n_task': 4,
+            'outer_lr': 0.01,
+            'gradient_steps': 5,
+        }
+
     # @override MetaTemplate
-    def forward(self, x) -> Tensor:
-        out = self.feature.forward(x)
-        scores = self.classifier.forward(out)
+    def forward(self, x, params=None) -> Tensor:
+        out = self.feature(x, params=self.get_subdict(params, 'feature'))
+        scores = self.classifier(
+            out, params=self.get_subdict(params, 'classifier'))
         return scores
 
     # @override MetaTemplate
-
     def set_forward_loss(self, x):
         x_support, x_query = self._split_set(x)
 
-        if self.maml_adapt_classifier:
-            fast_parameters = list(self.classifier.parameters())
-            for weight in self.classifier.parameters():
-                weight.fast = None
-        else:
-            fast_parameters = list(
-                self.parameters()
-            )  # the first gradient calcuated in line 45 is based on original weight
-            for weight in self.parameters():
-                weight.fast = None
-
         self.zero_grad()
-        self._maml_adapt(x_support)
+        params_adapted = self._maml_adapt(x_support)
 
-        scores = self.forward(x_query)
+        scores = self.forward(x_query, params=params_adapted)
         query_data_labels = self.query_labels()
         loss = self.loss_fn(scores, query_data_labels)
 
@@ -60,12 +60,17 @@ class MAML(MetaTemplate):
 
     def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
         print_freq = 10
-        avg_loss = 0
-        task_count = 0
-        loss_all = []
-        acc_all = []
 
-        # train
+        batches = len(train_loader)
+        n_task = self._hyperparameters()['n_task']
+        assert batches % n_task == 0
+
+        loss_all = torch.empty(n_task)
+        acc_all = torch.empty(len(train_loader))
+
+        task_count = 0
+        total_loss = 0
+
         for i, (x, _) in enumerate(train_loader):
             self.n_query = x.size(1) - self.n_support
             assert self.n_way == x.size(0), "MAML do not support way change"
@@ -74,44 +79,69 @@ class MAML(MetaTemplate):
 
             loss, scores = self.set_forward_loss(x)
             task_accuracy = self._task_accuracy(scores, self.query_labels())
-            avg_loss += loss.item()  # .data[0]
-            loss_all.append(loss)
-            acc_all.append(task_accuracy)
+            total_loss += loss.item()
+            loss_all[task_count] = loss
+            acc_all[i] = task_accuracy
 
             task_count += 1
 
-            # each iteration is one task
-            # after n_task iterations we aggregate the independent losses together and update target loss
-            # this should be a nested loop instead of the way its done here though...
-            # and I don't approve of multiplying num_epochs for MAML exclusively, it gets confusing
-            if task_count == self.n_task:  # MAML update several tasks at one time
-                loss_q = torch.stack(loss_all).sum(0)
+            # 1. Sample a number of tasks \tau_i from p(\tau)
+            # 2. For each task, obtain \phi_i = U_{\tau_i}(\theta), by minimizing \L_{\tau_i,\textbf{train}}(\theta) on n_support training samples
+            # 3. Update \theta by gradient descent such that it minimizes \L(\theta) := \sum_i \L_{\tau_i,\textbf{test}}(\phi_i) on n_query test samples
+
+            # this is the boundary where the algorithm has to be translated into our few-shot setting.
+            # the "number of tasks" from step 1 is equivalent to n_task, the number of batches
+            # that need processing before updating the universal parameters, and is a hyperparameter.
+
+            # __jm__ I don't approve of multiplying num_epochs for MAML exclusively, it gets confusing
+            if task_count == self._hyperparameters()['n_task']:
+                loss_q = loss_all.sum()
                 loss_q.backward()
 
                 optimizer.step()
                 task_count = 0
-                loss_all = []
             if i % print_freq == 0:
+                running_avg_loss = total_loss / float(i+1)
                 print(
                     "Epoch {:d} | Batch {:d}/{:d} | Loss {:f}".format(
-                        epoch, i, len(train_loader), avg_loss / float(i + 1)
+                        epoch, i, len(train_loader), running_avg_loss
                     )
                 )
 
-        acc_all = np.asarray(acc_all)
-        acc_mean = np.mean(acc_all)
+        # for i in range(batches // n_task):
+        #     optimizer.zero_grad()
+        #     losses = torch.empty(n_task)
+        #     for k in range(n_task):
+        #         x, _ = next(train_loader)
+        #         self.n_query = x.size(1) - self.n_support
+        #         assert self.n_way == x.size(
+        #             0), "MAML does not support way change"
 
-        metrics = {"accuracy/train": acc_mean}
+        #         loss, scores = self.set_forward_loss(x)
+        #         task_accuracy = self._task_accuracy(
+        #             scores, self.query_labels())
+        #         total_loss += loss.item()
+        #         losses[k] = loss
+        #         acc_all.append(task_accuracy)
+
+        #     outer_loss = losses.sum()
+        #     assert outer_loss.dim() == 1
+        #     outer_loss.backward()
+        #     optimizer.step()
+
+        metrics = {"accuracy/train": acc_all.mean()}
 
         return metrics
 
-    # shouldn't test also perform adaptation? It's definitely missing here
+    # @override MetaTemplate
     def test_loop(
         self, test_loader, return_std=False, return_time: bool = False
-    ):  # overwrite parrent function
+    ):
         _correct = 0
         _count = 0
-        acc_all = []
+
+        batches = len(test_loader)
+        acc_all = torch.empty(batches)
         eval_time = 0
         iter_num = len(test_loader)
         for i, (x, _) in enumerate(test_loader):
@@ -122,21 +152,17 @@ class MAML(MetaTemplate):
             t = time()
             eval_time += t - s
             task_accuracy = self._task_accuracy(scores, self.query_labels())
-            acc_all.append(task_accuracy)
+            acc_all[i] = task_accuracy
 
         num_tasks = len(acc_all)
-        acc_all = np.asarray(acc_all)
-        acc_mean = np.mean(acc_all)
-        acc_std = np.std(acc_all)
+        acc_mean, acc_std = torch.std_mean(acc_all)
         print(
             "%d Test Acc = %4.2f%% +- %4.2f%%"
             % (iter_num, acc_mean, 1.96 * acc_std / np.sqrt(iter_num))
         )
         print("Num tasks", num_tasks)
 
-        ret: list[Any] = [acc_mean]
-        if return_std:
-            ret.append(acc_std)
+        ret: list[Any] = [acc_mean, acc_std]
         if return_time:
             ret.append(eval_time)
         ret.append({})
@@ -164,34 +190,21 @@ class MAML(MetaTemplate):
 
         return x_support, x_query
 
-    def _maml_adapt(self, x_support: Tensor):
+    def _maml_adapt(self, x_support: Tensor) -> dict[str, Tensor]:
         y_support = self.support_labels()
+        names, params = zip(*self.meta_named_parameters())
+        params = torch.tensor(params)
 
-        for _task_step in list(range(self.task_update_num)):
-            scores = self.forward(x_support)
+        for _task_step in range(self.task_update_num):
+            scores = self.forward(x_support, params=dict(zip(names, params)))
             set_loss = self.loss_fn(scores, y_support)
-            grad = torch.autograd.grad(
-                set_loss, fast_parameters, create_graph=True
+
+            grad: tuple[Tensor, ...] = torch.autograd.grad(
+                set_loss, params, create_graph=(not self.approx)
             )  # build full graph support gradient of gradient
-            if self.approx:
-                grad = [
-                    g.detach() for g in grad
-                ]  # do not calculate gradient of gradient if using first order approximation
-            fast_parameters = []
-            parameters = (
-                self.classifier.parameters()
-                if self.maml_adapt_classifier
-                else self.parameters()
-            )
-            for k, weight in enumerate(parameters):
-                # for usage of weight.fast, please see Linear_fw, Conv_fw in backbone.py
-                if weight.fast is None:
-                    weight.fast = weight - self.train_lr * \
-                        grad[k]  # create weight.fast
-                else:
-                    weight.fast = (
-                        weight.fast - self.train_lr * grad[k]
-                    )  # create an updated weight.fast, note the '-' is not merely minus value, but to create a new weight.fast
-                fast_parameters.append(
-                    weight.fast
-                )  # gradients calculated in line 45 are based on newest fast weight, but the graph will retain the link to old weight.fasts
+
+            assert params.dim() == 1
+            assert len(params) == len(grad)
+            params -= self.train_lr * torch.tensor(grad)
+
+        return dict(zip(names, params))

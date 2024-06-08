@@ -1,12 +1,12 @@
-from torchmeta.modules.activation import MetaMultiheadAttention
-from torchmeta.modules.batchnorm import MetaBatchNorm1d, MetaBatchNorm2d, MetaBatchNorm3d
-from torchmeta.modules.container import MetaSequential
-from torchmeta.modules.conv import MetaConv1d, MetaConv2d, MetaConv3d
-from torchmeta.modules.linear import MetaLinear, MetaBilinear
-from torchmeta.modules.module import MetaModule
-from torchmeta.modules.normalization import MetaLayerNorm
-from torchmeta.modules.parallel import DataParallel
-from torchmeta.modules.sparse import MetaEmbedding, MetaEmbeddingBag
+from .activation import MetaMultiheadAttention
+from .batchnorm import MetaBatchNorm1d, MetaBatchNorm2d, MetaBatchNorm3d
+from .container import MetaSequential
+from .conv import MetaConv1d, MetaConv2d, MetaConv3d
+from .linear import MetaLinear, MetaBilinear
+from .module import MetaModule
+from .normalization import MetaLayerNorm
+from .parallel import DataParallel
+from .sparse import MetaEmbedding, MetaEmbeddingBag
 
 __all__ = [
     'MetaMultiheadAttention',
