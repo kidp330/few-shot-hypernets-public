@@ -1,16 +1,17 @@
 from collections import defaultdict
 from copy import deepcopy
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from methods.hypernets.utils import (accuracy_from_scores, get_param_dict,
-                                     set_from_param_dict)
+from methods.hypernets.utils import get_param_dict, set_from_param_dict
 from methods.meta_template import MetaTemplate
 from methods.transformer import TransformerEncoder
+from parsers.hypernet import HypernetParams
+from parsers.parsers import ParamHolder
 
 ALLOWED_AGGREGATIONS = ["concat", "mean", "max_pooling", "min_pooling"]
 
@@ -22,30 +23,28 @@ class HyperNetPOC(MetaTemplate):
         n_way: int,
         n_support: int,
         n_query: int,
-        params: "ArgparseHNParams",
+        params: ParamHolder,
         target_net_architecture: Optional[nn.Module] = None,
     ):
-        super().__init__(model_func, n_way, n_support)
+        super().__init__(model_func, n_way, n_support, n_query)
 
-        self.feat_dim = self.feature.final_feat_dim = (
-            64 if params.dataset == "cross_char" else 1600
-        )
+        self.feat_dim = 64 if params.dataset == "cross_char" else 1600
 
-        self.n_query = n_query
-        self.taskset_size: int = params.hn_taskset_size
-        self.taskset_print_every: int = params.hn_taskset_print_every
-        self.hn_hidden_size: int = params.hn_hidden_size
-        self.attention_embedding: bool = params.hn_attention_embedding
-        self.sup_aggregation: str = params.hn_sup_aggregation
-        self.detach_ft_in_hn: int = params.hn_detach_ft_in_hn
-        self.detach_ft_in_tn: int = params.hn_detach_ft_in_tn
-        self.hn_neck_len: int = params.hn_neck_len
-        self.hn_head_len: int = params.hn_head_len
-        self.taskset_repeats_config: str = params.hn_taskset_repeats
-        self.hn_dropout: float = params.hn_dropout
-        self.hn_val_epochs: int = params.hn_val_epochs
-        self.hn_val_lr: float = params.hn_val_lr
-        self.hn_val_optim: float = params.hn_val_optim
+        hn_params: HypernetParams = params
+        self.taskset_size = hn_params.taskset_size
+        self.taskset_print_every = hn_params.taskset_print_every
+        self.hn_hidden_size = hn_params.hidden_size
+        self.attention_embedding = hn_params.attention_embedding
+        self.sup_aggregation = hn_params.sup_aggregation
+        self.detach_ft_in_hn = hn_params.detach_ft_in_hn
+        self.detach_ft_in_tn = hn_params.detach_ft_in_tn
+        self.hn_neck_len = hn_params.neck_len
+        self.hn_head_len = hn_params.head_len
+        self.taskset_repeats_config = hn_params.taskset_repeats
+        self.hn_dropout = hn_params.dropout
+        self.hn_val_epochs = hn_params.val_epochs
+        self.hn_val_lr = hn_params.val_lr
+        self.hn_val_optim = hn_params.val_optim
 
         self.embedding_size = self.init_embedding_size(params)
         self.target_net_architecture = (
@@ -62,12 +61,9 @@ class HyperNetPOC(MetaTemplate):
     def init_embedding_size(self, params) -> int:
         if self.attention_embedding:
             return (self.feat_dim + self.n_way) * self.n_way * self.n_support
-        else:
-            assert self.sup_aggregation in ALLOWED_AGGREGATIONS
-            if self.sup_aggregation == "concat":
-                return self.feat_dim * self.n_way * self.n_support
-            elif self.sup_aggregation in ["mean", "max_pooling", "min_pooling"]:
-                return self.feat_dim * self.n_way
+        if self.sup_aggregation == "concat":
+            return self.feat_dim * self.n_way * self.n_support
+        return self.feat_dim * self.n_way
 
     def build_target_net_architecture(self, params) -> nn.Module:
         tn_hidden_size = params.hn_tn_hidden_size
@@ -274,6 +270,10 @@ class HyperNetPOC(MetaTemplate):
 
     def query_accuracy(self, x: torch.Tensor) -> float:
         scores = self.set_forward(x)
+
+        # __jm__ TODO: stubbed in favor of _task_accuracy()
+        def accuracy_from_scores(*_, **__):
+            return 0
         return accuracy_from_scores(scores, n_way=self.n_way, n_query=self.n_query)
 
     def set_forward_loss(
@@ -348,7 +348,7 @@ class HyperNetPOC(MetaTemplate):
         n_train = len(train_loader)
         accuracies = []
         losses = []
-        metrics = defaultdict(list)
+        metrics: dict[str, Any] = defaultdict(list)
         ts_repeats = self.taskset_repeats(epoch)
 
         for i, (x, _) in enumerate(train_loader):
@@ -452,12 +452,9 @@ class HypernetPPA(PPAMixin, HyperNetPOC):
     def init_embedding_size(self, params) -> int:
         if self.attention_embedding:
             raise NotImplementedError()
-        else:
-            assert self.sup_aggregation in ALLOWED_AGGREGATIONS
-            if self.sup_aggregation == "concat":
-                return self.feat_dim * self.n_support
-            elif self.sup_aggregation in ["mean", "max_pooling", "min_pooling"]:
-                return self.feat_dim
+        if self.sup_aggregation == "concat":
+            return self.feat_dim * self.n_support
+        return self.feat_dim
 
     def build_embedding(self, support_feature: torch.Tensor) -> torch.Tensor:
         way, n_support, feat = support_feature.shape

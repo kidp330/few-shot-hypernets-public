@@ -1,19 +1,18 @@
 from abc import abstractmethod
-from collections import defaultdict
 from typing import Callable, Tuple
 from torch import Tensor
 
-import numpy as np
 import torch
-import torch.nn as nn
 
-from modules.module import MetaModule
+from parsers.train import TrainParams
 
 # policy should be no default implementations in template, lest they be actually obvious
 
+from modules.module import MetaModule
+
 
 class MetaTemplate(MetaModule):
-    def __init__(self, model_func: Callable[[], MetaModule], n_way, n_support, n_query, change_way=True):
+    def __init__(self, model_func: Callable[[], MetaModule], n_way: int, n_support: int, n_query: int, change_way=True):
         super().__init__()
         self.n_way = n_way
         self.n_support = n_support

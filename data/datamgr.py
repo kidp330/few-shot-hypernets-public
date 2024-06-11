@@ -67,8 +67,9 @@ class SimpleDataManager(DataManager):
         transform = self.trans_loader.get_composed_transform(aug)
         dataset = SimpleDataset(data_file, transform)
 
+        num_workers = 8 if torch.cuda.is_available() else 0
         data_loader_params = dict(
-            batch_size=self.batch_size, shuffle=True, num_workers=8, pin_memory=True)
+            batch_size=self.batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
         data_loader = torch.utils.data.DataLoader(
             dataset, **data_loader_params)
@@ -93,8 +94,9 @@ class SetDataManager(DataManager):
         sampler = EpisodicBatchSampler(
             len(dataset), self.n_way, self.n_eposide)
 
+        num_workers = 8 if torch.cuda.is_available() else 0
         data_loader_params = dict(
-            batch_sampler=sampler, num_workers=8, pin_memory=True)
+            batch_sampler=sampler, num_workers=num_workers, pin_memory=True)
         data_loader = torch.utils.data.DataLoader(
             dataset, **data_loader_params)
         return data_loader

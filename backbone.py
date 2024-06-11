@@ -186,19 +186,19 @@ class ConvBlock(MetaModule):
         super(ConvBlock, self).__init__()
         self.indim = indim
         self.outdim = outdim
-        self.C = MetaConv2d(indim, outdim, 3, padding=padding)
-        self.BN = MetaBatchNorm2d(outdim)
-        self.relu = nn.ReLU(inplace=True)
+        C = MetaConv2d(indim, outdim, 3, padding=padding)
+        BN = MetaBatchNorm2d(outdim)
+        relu = nn.ReLU(inplace=True)
 
-        self.parametrized_layers = [self.C, self.BN, self.relu]
+        parametrized_layers = [C, BN, relu]
         if pool:
-            self.pool = nn.MaxPool2d(2)
-            self.parametrized_layers.append(self.pool)
+            pool_layer = nn.MaxPool2d(2)
+            parametrized_layers.append(pool_layer)
 
-        for layer in self.parametrized_layers:
+        for layer in parametrized_layers:
             init_layer(layer)
 
-        self.trunk = MetaSequential(*self.parametrized_layers)
+        self.trunk = MetaSequential(*parametrized_layers)
 
     def forward(self, x, params=None):
         out = self.trunk(x, params=self.get_subdict(params, 'trunk'))
@@ -324,7 +324,7 @@ class BottleneckBlock(MetaModule):
 
 class ConvNet(MetaModule):
     def __init__(self, depth, flatten=True, pool=False):
-        super(ConvNet, self).__init__()
+        super().__init__()
         trunk = []
         for i in range(depth):
             indim = 3 if i == 0 else 64
@@ -340,7 +340,7 @@ class ConvNet(MetaModule):
             trunk.append(Flatten())
 
         self.trunk = MetaSequential(*trunk)
-        self.final_feat_dim: int = 64  # outdim if pool else 1600
+        self.final_feat_dim: int = outdim
 
     def forward(self, x, params=None):
         out = self.trunk(x, params=self.get_subdict(params, 'trunk'))

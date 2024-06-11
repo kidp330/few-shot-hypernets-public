@@ -5,10 +5,11 @@ import torch
 from torch import nn
 
 from methods.hypernets import HyperNetPOC
-from methods.hypernets.utils import accuracy_from_scores, set_from_param_dict
+from methods.hypernets.utils import set_from_param_dict
 from methods.kernel_convolutions import KernelConv
 from methods.kernels import init_kernel_function
 from methods.transformer import TransformerEncoder
+from parsers.parsers import ParamHolder
 
 
 class HyperShot(HyperNetPOC):
@@ -18,7 +19,7 @@ class HyperShot(HyperNetPOC):
         n_way: int,
         n_support: int,
         n_query: int,
-        params: "ArgparseHNParams",
+        params: ParamHolder,
         target_net_architecture: Optional[nn.Module] = None,
     ):
         super().__init__(
@@ -131,13 +132,13 @@ class HyperShot(HyperNetPOC):
         """
         if self.n_support > 1:
             if self.sup_aggregation == "mean":
-                return torch.mean(support_feature, axis=1).reshape(self.n_way, 1, -1)
+                return torch.mean(support_feature, dim=1).reshape(self.n_way, 1, -1)
             elif self.sup_aggregation == "max_pooling":
-                pooled, _ = torch.max(support_feature, axis=1)
+                pooled, _ = torch.max(support_feature, dim=1)
                 pooled = pooled.reshape(self.n_way, 1, -1)
                 return pooled
             elif self.sup_aggregation == "min_pooling":
-                pooled, _ = torch.min(support_feature, axis=1)
+                pooled, _ = torch.min(support_feature, dim=1)
                 pooled = pooled.reshape(self.n_way, 1, -1)
                 return pooled
 
@@ -299,6 +300,10 @@ class HyperShot(HyperNetPOC):
         relational_query_feature = self.build_relations_features(
             support_feature, query_feature
         )
+
+        # __jm__ TODO: stubbed in favor of _task_accuracy()
+        def accuracy_from_scores(*_, **__):
+            return 0
         metrics["accuracy/val_relational"] = accuracy_from_scores(
             relational_query_feature, self.n_way, self.n_query
         )
