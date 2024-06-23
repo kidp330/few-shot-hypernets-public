@@ -1,79 +1,88 @@
-# This code is modified from https://github.com/dragen1860/MAML-Pytorch and https://github.com/katerakelly/pytorch-maml
-from copy import deepcopy
+# This code is modified from
+# https://github.com/dragen1860/MAML-Pytorch
+# https://github.com/katerakelly/pytorch-maml
+# https://github.com/tristandeleu/pytorch-meta/blob/master/examples/maml/train.py
+from collections import OrderedDict
 from time import time
-from typing import Any, Callable, Generator, Iterable, Iterator
+from typing import Callable, Optional
+from attr import dataclass
 from torch import Tensor
-from torch.nn.parameter import Parameter
 
-import numpy as np
+import math
 import torch
 from torch import nn
 
-from methods.meta_template import MetaTemplate
+from torch.utils.data import DataLoader
+
+from methods.meta_template import MetaTemplate, TestResults
 from modules.linear import MetaLinear
+from modules.module import MetaParamDict
+from parsers.parsers import ParamHolder
+import backbone
 
 
 class MAML(MetaTemplate):
-    def __init__(self, model_func, n_way, n_support, n_query, params, approx=False):
+    @dataclass
+    class Hyperparameters:
+        n_task: int = 4
+        inner_lr: float = 0.01
+        gradient_steps: int = 5
+
+    def __init__(self, model_func, n_way, n_support, n_query, params: ParamHolder, hyperparameters: Hyperparameters, approx=False):
         super().__init__(model_func, n_way, n_support, n_query, change_way=False)
 
         self.loss_fn: Callable[[Tensor, Tensor],
                                Tensor] = nn.CrossEntropyLoss()
-        self.classifier = MetaLinear(self.feat_dim, n_way)
-
-        # initializes bias to 0 but doesn't touch weights, why?
-        self.classifier.bias.data.fill_(0)
-
+        self._init_classifier()
         self.maml_only_adapt_classifier = params.maml_only_adapt_classifier
-
-        self.n_task = 4
-        self.task_update_num = 5
-        self.train_lr = 0.01
+        self.log = False
+        self.hyperparameters = hyperparameters
         self.approx = approx  # first order approx.
 
-    def _hyperparameters(self):
-        return {
-            'n_task': 4,
-            'outer_lr': 0.01,
-            'gradient_steps': 5,
-        }
+    # @override MetaTemplate
+    def forward(self, x: Tensor, params: Optional[OrderedDict[str, Tensor]] = None) -> Tensor:
+        x = self.feature(
+            x, params=None if self.maml_only_adapt_classifier else self.get_subdict(params, 'feature'))
+        x = self.classifier(
+            x, params=self.get_subdict(params, 'classifier'))
+        return x
 
     # @override MetaTemplate
-    def forward(self, x, params=None) -> Tensor:
-        out = self.feature(x, params=self.get_subdict(params, 'feature'))
-        scores = self.classifier(
-            out, params=self.get_subdict(params, 'classifier'))
-        return scores
-
-    # @override MetaTemplate
-    def set_forward_loss(self, x):
+    def set_forward(self, x: Tensor):
         x_support, x_query = self._split_set(x)
 
         self.zero_grad()
         params_adapted = self._maml_adapt(x_support)
 
         scores = self.forward(x_query, params=params_adapted)
-        query_data_labels = self.query_labels()
-        loss = self.loss_fn(scores, query_data_labels)
+        return scores
 
+    # @override MetaTemplate
+    def set_forward_loss(self, x: Tensor):
+        scores = self.set_forward(x)
+        query_labels = self.query_labels()
+
+        # assert len(scores) == len(query_labels)
+        loss = self.loss_fn(scores, query_labels)
         return loss, scores
 
-    def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
+    # @override MetaTemplate
+    # overwrite parrent function
+    def train_loop(self, epoch: int, train_loader: DataLoader, optimizer: torch.optim.Optimizer):
         print_freq = 10
 
+        n_task = self.hyperparameters.n_task
         batches = len(train_loader)
-        n_task = self._hyperparameters()['n_task']
-        assert batches % n_task == 0
+        # assert batches % n_task == 0
 
-        loss_all = torch.empty(n_task)
-        acc_all = torch.empty(len(train_loader))
+        loss_all: list[Tensor] = [torch.scalar_tensor(0)] * n_task
+        acc_all = torch.empty(batches)
 
         task_count = 0
         total_loss = 0
 
         for i, (x, _) in enumerate(train_loader):
-            self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML do not support way change"
+            self._batch_guard(x)
 
             optimizer.zero_grad()
 
@@ -94,28 +103,21 @@ class MAML(MetaTemplate):
             # that need processing before updating the universal parameters, and is a hyperparameter.
 
             # __jm__ I don't approve of multiplying num_epochs for MAML exclusively, it gets confusing
-            if task_count == self._hyperparameters()['n_task']:
-                loss_q = loss_all.sum()
+            if task_count == n_task:
+                loss_q = sum(loss_all, torch.scalar_tensor(0))
                 loss_q.backward()
 
                 optimizer.step()
                 task_count = 0
             if i % print_freq == 0:
                 running_avg_loss = total_loss / float(i+1)
-                print(
-                    "Epoch {:d} | Batch {:d}/{:d} | Loss {:f}".format(
-                        epoch, i, len(train_loader), running_avg_loss
-                    )
-                )
-
+                print(f"Epoch {epoch} | Batch {i}/{batches} | Loss {running_avg_loss}")  # nopep8
         # for i in range(batches // n_task):
         #     optimizer.zero_grad()
         #     losses = torch.empty(n_task)
         #     for k in range(n_task):
         #         x, _ = next(train_loader)
-        #         self.n_query = x.size(1) - self.n_support
-        #         assert self.n_way == x.size(
-        #             0), "MAML does not support way change"
+        #         self._batch_guard(x)
 
         #         loss, scores = self.set_forward_loss(x)
         #         task_accuracy = self._task_accuracy(
@@ -129,46 +131,91 @@ class MAML(MetaTemplate):
         #     outer_loss.backward()
         #     optimizer.step()
 
-        metrics = {"accuracy/train": acc_all.mean()}
+        metrics = {"accuracy/train": acc_all.mean().item()}
 
         return metrics
 
     # @override MetaTemplate
     def test_loop(
-        self, test_loader, return_std=False, return_time: bool = False
-    ):
-        _correct = 0
-        _count = 0
-
+        self, test_loader: DataLoader
+    ) -> TestResults:
         batches = len(test_loader)
         acc_all = torch.empty(batches)
         eval_time = 0
-        iter_num = len(test_loader)
         for i, (x, _) in enumerate(test_loader):
-            self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML do not support way change"
+            self._batch_guard(x)
+
             s = time()
+            if i < 2:
+                self.log = True
+            else:
+                self.log = False
             scores = self.set_forward(x)
             t = time()
             eval_time += t - s
             task_accuracy = self._task_accuracy(scores, self.query_labels())
             acc_all[i] = task_accuracy
 
-        num_tasks = len(acc_all)
-        acc_mean, acc_std = torch.std_mean(acc_all)
-        print(
-            "%d Test Acc = %4.2f%% +- %4.2f%%"
-            % (iter_num, acc_mean, 1.96 * acc_std / np.sqrt(iter_num))
-        )
-        print("Num tasks", num_tasks)
+        acc_std, acc_mean = torch.std_mean(acc_all)
 
-        ret: list[Any] = [acc_mean, acc_std]
-        if return_time:
-            ret.append(eval_time)
-        ret.append({})
+        print(f"Num tasks = {batches=}")
+        print(f"Test Acc = {acc_mean:4.2f} +- {1.96 * acc_std / math.sqrt(batches):4.2f}")  # nopep8
 
-        return ret
+        return TestResults(acc_mean.item(), acc_std.item(), eval_time, {})
 
+    def _maml_adapt(self, x_support: Tensor) -> MetaParamDict:
+        y_support = self.support_labels()
+        lr = self.hyperparameters.inner_lr
+        params: MetaParamDict = self._get_adaptable_params()
+        gradient_steps = self.hyperparameters.gradient_steps
+
+        for _task_step in range(gradient_steps):
+            scores = self.forward(
+                x_support, params=self._parameters_meld_adaptable(params))
+            set_loss = self.loss_fn(scores, y_support)
+            # build full graph support gradient of gradient unless first-order MAML
+            # no graph is equivalent to detaching afterwards
+            grad: tuple[Tensor, ...] = torch.autograd.grad(
+                set_loss, list(params.values()),
+                create_graph=(not self.approx)
+            )
+
+            assert len(params) == len(grad)
+            for name, g in zip(params.keys(), grad):
+                # warning: this does NOT have the same behaviour as -=
+                # -= modifies the parameter in place, changing the model's original parameters,
+                # and it also requires torch.no_grad()
+                params[name] = params[name] - lr * g
+
+        return self._parameters_meld_adaptable(params)
+
+    def _get_adaptable_params(self) -> MetaParamDict:
+        pdict = OrderedDict(self.meta_named_parameters())
+        if self.maml_only_adapt_classifier:
+            pdict = self.get_subdict(pdict, 'classifier')
+        assert isinstance(pdict, OrderedDict)  # __jm__ HACK shuts up pylance
+        return pdict
+
+    def _parameters_meld_adaptable(self, adaptable: MetaParamDict) -> MetaParamDict:
+        # assert adaptable.keys() == self._get_adaptable_params().keys()
+        melded = self._get_adaptable_params()
+        for name in melded.keys():
+            ad_name = name
+            if self.maml_only_adapt_classifier:
+                prefix = 'classifier.'
+                if not str.startswith(name, prefix):
+                    continue
+                ad_name = str.removeprefix(name, prefix)
+
+            melded[name] = adaptable[ad_name]
+        return melded
+
+    def _init_classifier(self):
+        self.classifier = MetaLinear(self.feat_dim, self.n_way)
+        with torch.no_grad():
+            self.classifier.bias.fill_(0)
+
+# MAMLTemplate candidates:
     def _task_accuracy(self, out: Tensor, y_true: Tensor) -> float:
         _max_scores, max_labels = torch.max(out, dim=1)
         max_labels = max_labels.flatten()
@@ -190,21 +237,7 @@ class MAML(MetaTemplate):
 
         return x_support, x_query
 
-    def _maml_adapt(self, x_support: Tensor) -> dict[str, Tensor]:
-        y_support = self.support_labels()
-        names, params = zip(*self.meta_named_parameters())
-        params = torch.tensor(params)
-
-        for _task_step in range(self.task_update_num):
-            scores = self.forward(x_support, params=dict(zip(names, params)))
-            set_loss = self.loss_fn(scores, y_support)
-
-            grad: tuple[Tensor, ...] = torch.autograd.grad(
-                set_loss, params, create_graph=(not self.approx)
-            )  # build full graph support gradient of gradient
-
-            assert params.dim() == 1
-            assert len(params) == len(grad)
-            params -= self.train_lr * torch.tensor(grad)
-
-        return dict(zip(names, params))
+    def _batch_guard(self, x: Tensor):
+        self.n_query = x.size(1) - self.n_support
+        assert self.n_way == x.size(0), \
+            f"MAML does not support way change, {self.n_way=}, {x.size(0)=}"
