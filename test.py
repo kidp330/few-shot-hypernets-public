@@ -13,7 +13,7 @@ import backbone
 import configs
 import data.feature_loader as feat_loader
 from data.datamgr import SetDataManager
-from io_utils import get_assigned_file, get_best_file, model_dict, parse_args
+from io_utils import get_assigned_file, get_best_file, model_dict
 from methods.baselinetrain import BaselineFinetune
 from methods.DKT import DKT
 from methods.hypernets import hypernet_types
@@ -24,6 +24,7 @@ from methods.maml import MAML
 from methods.matchingnet import MatchingNet
 from methods.protonet import ProtoNet
 from methods.relationnet import RelationNet
+from parsers.parsers import ParamHolder
 
 
 def _set_seed(seed, verbose=True):
@@ -70,15 +71,15 @@ def feature_evaluation(
     return acc
 
 
-def single_test(params):
+def single_test(params: ParamHolder):
     acc_all = []
-
     iter_num = 600
 
     n_query = max(
         1, int(16 * params.test_n_way / params.train_n_way)
     )  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
-    print("n_query", n_query)
+    print(f"{n_query=}")
+
     few_shot_params = dict(
         n_way=params.test_n_way, n_support=params.n_shot, n_query=n_query
     )
@@ -91,11 +92,12 @@ def single_test(params):
         # params.model = 'Conv4S'
 
     if params.method == "baseline":
-        model = BaselineFinetune(model_dict[params.model], **few_shot_params)
-    elif params.method == "baseline++":
-        model = BaselineFinetune(
-            model_dict[params.model], loss_type="dist", **few_shot_params
-        )
+        pass  # __jm__ stub
+    #     model = BaselineFinetune(model_dict[params.model], **few_shot_params)
+    # elif params.method == "baseline++":
+    #     model = BaselineFinetune(
+    #         model_dict[params.model], loss_type="dist", **few_shot_params
+    #     )
     elif params.method == "protonet":
         model = ProtoNet(model_dict[params.model], **few_shot_params)
     elif params.method == "DKT":
@@ -115,79 +117,72 @@ def single_test(params):
         model = RelationNet(
             feature_model, loss_type=loss_type, **few_shot_params)
     elif params.method in ["maml", "maml_approx"]:
-        backbone.ConvBlock.maml = True
-        backbone.SimpleBlock.maml = True
-        backbone.BottleneckBlock.maml = True
-        backbone.ResNet.maml = True
         model = MAML(
             model_dict[params.model],
             params=params,
             approx=(params.method == "maml_approx"),
             **few_shot_params,
         )
-        if params.dataset in [
-            "omniglot",
-            "cross_char",
-        ]:  # maml use different parameter in omniglot
-            model.n_task = 32
-            model.task_update_num = 1
-            model.train_lr = 0.1
-    elif params.method in list(hypernet_types.keys()):
-        few_shot_params["n_query"] = 15
-        hn_type: Type[HyperNetPOC] = hypernet_types[params.method]
-        model = hn_type(model_dict[params.model],
-                        params=params, **few_shot_params)
+        # __jm__ TODO: uncomment
+        # if params.dataset in [
+        #     "omniglot",
+        #     "cross_char",
+        # ]:  # maml use different parameter in omniglot
+        #     model.n_task = 32
+        #     model.task_update_num = 1
+        #     model.train_lr = 0.1
+    # elif params.method in list(hypernet_types.keys()):
+    #     few_shot_params["n_query"] = 15
+    #     hn_type: Type[HyperNetPOC] = hypernet_types[params.method]
+    #     model = hn_type(model_dict[params.model],
+    #                     params=params, **few_shot_params)
         # model = HyperNetPOC(model_dict[params.model], **few_shot_params)
     elif params.method == "hyper_maml" or params.method == "bayes_hmaml":
         if params.method == "bayes_hmaml":
             model = BayesHMAML(
                 model_dict[params.model],
+                *few_shot_params.values(),
                 params=params,
                 approx=(params.method == "maml_approx"),
-                **few_shot_params,
             )
         else:
             model = HyperMAML(
                 model_dict[params.model],
+                *few_shot_params.values(),
                 params=params,
                 approx=(params.method == "maml_approx"),
-                **few_shot_params,
             )
-        if params.dataset in [
-            "omniglot",
-            "cross_char",
-        ]:  # maml use different parameter in omniglot
-            model.n_task = 32
-            model.train_lr = 0.1
+        # __jm__ TODO: uncomment
+        # if params.dataset in [
+        #     "omniglot",
+        #     "cross_char",
+        # ]:  # maml use different parameter in omniglot
+        #     model.n_task = 32
+        #     model.train_lr = 0.1
     else:
         raise ValueError("Unknown method")
 
-    few_shot_params["n_query"] = 15
-
-    checkpoint_dir = "%s/checkpoints/%s/%s_%s" % (
-        configs.save_dir,
-        params.dataset,
-        params.model,
-        params.method,
-    )
+    checkpoint_dir = configs.save_dir / 'checkpoints' / \
+        params.dataset / params.model / params.method
 
     if params.train_aug:
-        checkpoint_dir += "_aug"
+        checkpoint_dir /= "_aug"
     if not params.method in ["baseline", "baseline++"]:
-        checkpoint_dir += "_%dway_%dshot" % (params.train_n_way, params.n_shot)
+        checkpoint_dir /= f"_{params.train_n_way}way_{
+            params.n_shot}shot"
     if params.checkpoint_suffix != "":
-        checkpoint_dir = checkpoint_dir + "_" + params.checkpoint_suffix
+        checkpoint_dir /= params.checkpoint_suffix
 
     if params.dataset == "cross":
-        if not Path(checkpoint_dir).exists():
+        if not checkpoint_dir.exists():
             checkpoint_dir = checkpoint_dir.replace("cross", "miniImagenet")
 
-    assert Path(checkpoint_dir).exists(), checkpoint_dir
+    assert checkpoint_dir.exists()
 
-    # modelfile   = get_resume_file(checkpoint_dir)
+    # modelfile = get_resume_file(checkpoint_dir)
 
     if not params.method in ["baseline", "baseline++"]:
-        if params.save_iter != -1:
+        if params.save_iter is not None:
             modelfile = get_assigned_file(checkpoint_dir, params.save_iter)
         else:
             modelfile = get_best_file(checkpoint_dir)
@@ -229,16 +224,16 @@ def single_test(params):
 
         if params.dataset == "cross":
             if split == "base":
-                loadfile = configs.data_dir["miniImagenet"] + "all.json"
+                loadfile = configs.data_dir["miniImagenet"] / "all.json"
             else:
-                loadfile = configs.data_dir["CUB"] + split + ".json"
+                loadfile = configs.data_dir["CUB"] / f'{split}.json'
         elif params.dataset == "cross_char":
             if split == "base":
-                loadfile = configs.data_dir["omniglot"] + "noLatin.json"
+                loadfile = configs.data_dir["omniglot"] / "noLatin.json"
             else:
-                loadfile = configs.data_dir["emnist"] + split + ".json"
+                loadfile = configs.data_dir["emnist"] / f'{split}.json'
         else:
-            loadfile = configs.data_dir[params.dataset] + split + ".json"
+            loadfile = configs.data_dir[params.dataset] / f'{split}.json'
 
         novel_loader = datamgr.get_data_loader(loadfile, aug=False)
         if params.adaptation:
@@ -248,21 +243,16 @@ def single_test(params):
             # We perform adaptation on MAML simply by updating more times.
 
         model.eval()
-        model.single_test = True
+        # __jm__ removed from HyperMAML: who thought this would be a good idea?
+        # model.single_test = True
 
-        if isinstance(model, (MAML, BayesHMAML, HyperMAML)):
-            acc_mean, acc_std, eval_time, *_ = model.test_loop(
-                novel_loader, return_std=True, return_time=True
-            )
-        else:
-            acc_mean, acc_std, * \
-                _ = model.test_loop(novel_loader, return_std=True)
+        # __jm__ non unified interface
+        acc_mean, acc_std, *_ = model.test_loop(novel_loader, return_time=True)
 
     else:
-        novel_file = os.path.join(
-            checkpoint_dir.replace(
-                "checkpoints", "features"), split_str + ".hdf5"
-        )  # defaut split = novel, but you can also test base or val classes
+        # defaut split = novel, but you can also test base or val classes
+        novel_file = Path(str(checkpoint_dir).replace(
+            "checkpoints", "features")) / f"{split_str}.hdf5"
         cl_data_file = feat_loader.init_loader(novel_file)
 
         for i in range(iter_num):
@@ -278,7 +268,6 @@ def single_test(params):
             "%d Test Acc = %4.2f%% +- %4.2f%%"
             % (iter_num, acc_mean, 1.96 * acc_std / np.sqrt(iter_num))
         )
-
     with open("./record/results.txt", "a") as f:
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
         aug_str = "-aug" if params.train_aug else ""
@@ -304,13 +293,12 @@ def single_test(params):
                 params.train_n_way,
                 params.test_n_way,
             )
-        acc_str = "%d Test Acc = %4.2f%% +- %4.2f%%" % (
-            iter_num,
-            acc_mean,
-            1.96 * acc_std / np.sqrt(iter_num),
-        )
-        f.write("Time: %s, Setting: %s, Acc: %s \n" %
-                (timestamp, exp_setting, acc_str))
+
+        percentile975 = 1.96 * acc_std / np.sqrt(iter_num)
+        # __jm__ wtf
+        print(acc_mean)
+        acc_str = f"{iter_num} Test Acc = {acc_mean} +- {percentile975:4.2f}"  # nopep8
+        f.write(f"Time: {timestamp}, Setting: {exp_setting}, Acc: {acc_str}\n")
 
     print("Test loop time:", eval_time)
     return acc_mean, eval_time
@@ -351,7 +339,7 @@ def perform_test(params):
 
 
 def main():
-    params = parse_args("test")
+    params = ParamHolder().parse_args()  # __jm__ TODO: TestParams class
     perform_test(params)
 
 
