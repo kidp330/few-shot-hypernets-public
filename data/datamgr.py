@@ -1,16 +1,13 @@
 # This code is modified from https://github.com/facebookresearch/low-shot-shrink-hallucinate
 
 import torch
-from PIL import Image
+from torch.utils.data import DataLoader
 import numpy as np
 import torchvision.transforms as transforms
 import data.additional_transforms as add_transforms
 from data.dataset import SimpleDataset, SetDataset, EpisodicBatchSampler
 from abc import abstractmethod
-
-
-def _init_fn(worker_id):
-    np.random.seed(0)
+import backbone
 
 
 class TransformLoader:
@@ -67,11 +64,11 @@ class SimpleDataManager(DataManager):
         transform = self.trans_loader.get_composed_transform(aug)
         dataset = SimpleDataset(data_file, transform)
 
+        num_workers = 0  # __jm__
         data_loader_params = dict(
-            batch_size=self.batch_size, shuffle=True, num_workers=8, pin_memory=True)
+            batch_size=self.batch_size, shuffle=True, num_workers=num_workers, generator=torch.Generator(backbone.get_default_device()))
 
-        data_loader = torch.utils.data.DataLoader(
-            dataset, **data_loader_params)
+        data_loader = DataLoader(dataset, **data_loader_params)
 
         return data_loader
 
@@ -93,8 +90,9 @@ class SetDataManager(DataManager):
         sampler = EpisodicBatchSampler(
             len(dataset), self.n_way, self.n_eposide)
 
+        num_workers = 0  # __jm__
         data_loader_params = dict(
-            batch_sampler=sampler, num_workers=8, pin_memory=True)
-        data_loader = torch.utils.data.DataLoader(
+            batch_sampler=sampler, num_workers=num_workers, generator=torch.Generator(backbone.get_default_device()))
+        data_loader = DataLoader(
             dataset, **data_loader_params)
         return data_loader
