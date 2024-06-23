@@ -1,142 +1,153 @@
-from collections import defaultdict
+from collections import OrderedDict, defaultdict, namedtuple
 from copy import deepcopy
+from dataclasses import dataclass
+import math
+import operator
+import random
 from time import time
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 import numpy as np
 import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
-import pytorch_lightning as pl
+from torch.nn.parameter import Parameter
+from parsers.hypernet import Adaptation, HypernetParams
+from parsers.parsers import ParamHolder
+from methods.hypernets.utils import get_param_dict
+from methods.meta_template import MetaTemplate, TestResults
+from modules.container import MetaSequential
+from modules.linear import MetaLinear
+from modules.module import MetaModule, MetaParamDict
+from torch import Tensor
+from torch.optim import Optimizer
 
-import backbone
-from io_utils import ParamHolder
-from methods.hypernets.utils import accuracy_from_scores, get_param_dict
-from methods.meta_template import MetaTemplate
+from parsers.hypermaml import HyperMAMLParams, UpdateOperator
 
 
-class HyperNet(pl.LightningModule):
-    # __jm__ figure out why arguments were placed but unused
+class HyperNet(MetaModule):
     def __init__(
-        self, hn_hidden_size, _n_way, embedding_size, _feature_dim, out_neurons, params
+        self, hn_head_len: int, hn_hidden_size: int, head_in: int, head_out: int
     ):
         super().__init__()
 
-        self.hn_head_len = params.hn_head_len
+        head = [MetaLinear(head_in, hn_hidden_size), nn.ReLU()]
 
-        head = [nn.Linear(embedding_size, hn_hidden_size), nn.ReLU()]
+        assert hn_head_len >= 2
+        middle = [MetaLinear(hn_hidden_size, hn_hidden_size),
+                  nn.ReLU()] * (hn_head_len - 2)
 
-        if self.hn_head_len > 2:
-            for _ in range(self.hn_head_len - 2):
-                head.append(nn.Linear(hn_hidden_size, hn_hidden_size))
-                head.append(nn.ReLU())
+        self.head = MetaSequential(*head, *middle)
+        self.tail = MetaLinear(hn_hidden_size, head_out)
 
-        self.head = nn.Sequential(*head)
-
-        tail = [nn.Linear(hn_hidden_size, out_neurons)]
-
-        self.tail = nn.Sequential(*tail)
-
-    def forward(self, x):
-        out = self.head(x)
-        out = self.tail(out)
+    def forward(self, x, params: Optional[MetaParamDict] = None):
+        out = self.head(x, params=self.get_subdict(params, 'head'))
+        out = self.tail(out, params=self.get_subdict(params, 'tail'))
         return out
 
 
 class HyperMAML(MetaTemplate):
+    """
+        TODO: docstring
+    """
+
     def __init__(
         self,
-        model_func,
+        model_func: Callable[[], MetaModule],
         n_way: int,
         n_support: int,
-        _n_query: int,
+        n_query: int,
         params: ParamHolder,
         approx=False,
     ):
-        super().__init__(model_func, n_way, n_support, change_way=True)
-        self.loss_fn = nn.CrossEntropyLoss()
+        super().__init__(model_func, n_way, n_support, n_query, change_way=True)
 
-        self.hn_tn_hidden_size = params.hn_tn_hidden_size
-        self.hn_tn_depth = params.hn_tn_depth
-        self._init_classifier()
-
-        self.enhance_embeddings = params.hm_enhance_embeddings
-
-        self.n_task = 4
-        self.task_update_num = 5
-        self.train_lr = 0.01
+        self.loss_fn: Callable[[Tensor, Tensor],
+                               Tensor] = nn.CrossEntropyLoss()
         self.approx = approx  # first order approx.
-
-        self.hn_sup_aggregation = params.hn_sup_aggregation
-        self.hn_hidden_size = params.hn_hidden_size
-        self.hm_lambda = params.hm_lambda
-        self.hm_save_delta_params = params.hm_save_delta_params
-        self.hm_use_class_batch_input = params.hm_use_class_batch_input
-        self.hn_adaptation_strategy = params.hn_adaptation_strategy
-        self.hm_support_set_loss = params.hm_support_set_loss
-        self.hm_maml_warmup = params.hm_maml_warmup
-        self.hm_maml_warmup_epochs = params.hm_maml_warmup_epochs
-        self.hm_maml_warmup_switch_epochs = params.hm_maml_warmup_switch_epochs
-        self.hm_maml_update_feature_net = params.hm_maml_update_feature_net
-        self.hm_update_operator = params.hm_update_operator
-        self.hm_load_feature_net = params.hm_load_feature_net
-        self.hm_feature_net_path = params.hm_feature_net_path
-        self.hm_detach_feature_net = params.hm_detach_feature_net
-        self.hm_detach_before_hyper_net = params.hm_detach_before_hyper_net
-        self.hm_set_forward_with_adaptation = params.hm_set_forward_with_adaptation
-        self.hn_val_lr = params.hn_val_lr
-        self.hn_val_epochs = params.hn_val_epochs
-        self.hn_val_optim = params.hn_val_optim
-
-        self.delta_list = []
         self.alpha = 0
-        self.hn_alpha_step = params.hn_alpha_step
+
+        hn_params: HypernetParams = params
+        self.hn_sup_aggregation = hn_params.sup_aggregation
+        self.hn_adaptation_strategy: Adaptation = hn_params.adaptation_strategy
+        self.hn_val_lr = hn_params.val_lr
+        self.hn_val_epochs = hn_params.val_epochs
+        self.hn_val_optim = hn_params.val_optim
+        self.hn_alpha_step = hn_params.alpha_step
+
+        hm_params: HyperMAMLParams = params
+        self.hm_lambda = hm_params.hm_lambda
+        self.use_enhance_embeddings = hm_params.use_enhance_embeddings
+        self.hm_use_class_batch_input = hm_params.use_class_batch_input
+        self.hm_train_support_set_loss = hm_params.train_support_set_loss
+
+        self.hm_maml_warmup = hm_params.maml_warmup
+        self.hm_maml_warmup_epochs = hm_params.maml_warmup_epochs
+        self.hm_maml_warmup_switch_epochs = hm_params.maml_warmup_switch_epochs
+
+        self.hm_detach_after_feature_net = hm_params.detach_feature_net
+
+        self.hm_update_operator: UpdateOperator = hm_params.update_operator
+        self.hm_detach_before_hyper_net = hm_params.detach_before_hyper_net
+        self.hm_test_set_forward_with_adaptation = hm_params.test_set_forward_with_adaptation
 
         if self.hn_adaptation_strategy == "increasing_alpha" and self.hn_alpha_step < 0:
             raise ValueError("hn_alpha_step is not positive!")
 
-        self.single_test = False
-        self.epoch = -1
-        self.start_epoch = -1
-        self.stop_epoch = -1
+        operators: dict[UpdateOperator, Callable] = {
+            "minus": operator.sub,
+            "plus": operator.add,
+            "multiply": operator.mul,
+        }
+        self._update_weight_op = operators[hm_params.update_operator]
+        self._epoch = -1
 
-        self.calculate_embedding_size()
+        self._init_classifier(
+            depth=hn_params.tn_depth,
+            hidden_size=hn_params.tn_hidden_size,
+        )
 
-        self._init_hypernet_modules(params)
-        self._init_feature_net()
+        self._init_hypernet_modules(
+            target_network=self.classifier,
+            in_dim=self.calculate_embedding_size(),
+            hn_head_len=hn_params.head_len,
+            hn_hidden_size=hn_params.hidden_size,
+        )
 
-        # print(self)
+        # self.trunk = MetaSequential(
+        #     self.feature,
+        #     self.hypernet_heads,
+        #     self.classifier
+        # )
 
-    def _init_feature_net(self):
-        if self.hm_load_feature_net:
-            print(
-                f"loading feature net model from location: {self.hm_feature_net_path}"
-            )
-            model_dict = torch.load(self.hm_feature_net_path)
-            self.feature.load_state_dict(model_dict["state"])
+        # self.trunk = MetaSequential(
+        #     self.feature,
+        #     self.hypernet_heads,
+        #     self.classifier
+        # )
 
-    def _init_classifier(self):
+    def _init_classifier(self, depth: int, hidden_size: int):
         assert (
-            self.hn_tn_hidden_size % self.n_way == 0
-        ), f"hn_tn_hidden_size {self.hn_tn_hidden_size} should be the multiple of n_way {self.n_way}"
+            hidden_size % self.n_way == 0
+        ), f"{hidden_size=} should be the multiple of {self.n_way=}"
         layers = []
 
-        for i in range(self.hn_tn_depth):
-            in_dim = self.feat_dim if i == 0 else self.hn_tn_hidden_size
-            out_dim = (
-                self.n_way if i == (self.hn_tn_depth - 1) else self.hn_tn_hidden_size
-            )
+        for i in range(depth):
+            in_dim = self.feat_dim if i == 0 else hidden_size
+            out_dim = self.n_way if i == (depth - 1) else hidden_size
 
-            linear = backbone.Linear_fw(in_dim, out_dim)
-            linear.bias.data.fill_(0)
+            linear = MetaLinear(in_dim, out_dim)
+            with torch.no_grad():
+                linear.bias.fill_(0)
 
             layers.append(linear)
 
-        self.classifier = nn.Sequential(*layers)
+        self.classifier = MetaSequential(*layers)
 
-    def _init_hypernet_modules(self, params):
-        target_net_param_dict = get_param_dict(self.classifier)
+    def _init_hypernet_modules(self, target_network: MetaModule, in_dim: int, hn_head_len: int, hn_hidden_size: int):
 
+        target_net_param_dict = get_param_dict(target_network)
         target_net_param_dict = {
             name.replace(".", "-"): p
             # replace dots with hyphens bc torch doesn't like dots in modules names
@@ -150,508 +161,552 @@ class HyperMAML(MetaTemplate):
         self.hypernet_heads = nn.ModuleDict()
 
         for name, param in target_net_param_dict.items():
-            if self.hm_use_class_batch_input and name[-4:] == "bias":
+            if self.hm_use_class_batch_input and str.endswith(name, "bias"):
                 continue
 
+            # assert param.shape[0] % self.n_way == 0 ?
             bias_size = param.shape[0] // self.n_way
 
-            head_in = self.embedding_size
-            head_out = (
+            # assert param.numel() % self.n_way == 0 ?
+            out_dim = (
                 (param.numel() // self.n_way) + bias_size
                 if self.hm_use_class_batch_input
                 else param.numel()
             )
-            _head_modules = []
 
             self.hypernet_heads[name] = HyperNet(
-                self.hn_hidden_size,
-                self.n_way,
-                head_in,
-                self.feat_dim,
-                head_out,
-                params,
+                hn_head_len,
+                hn_hidden_size,
+                in_dim,
+                out_dim,
             )
 
-    def calculate_embedding_size(self):
+    def calculate_embedding_size(self) -> int:
         n_classes_in_embedding = 1 if self.hm_use_class_batch_input else self.n_way
         n_support_per_class = 1 if self.hn_sup_aggregation == "mean" else self.n_support
-        single_support_embedding_len = (
-            self.feat_dim + self.n_way + 1 if self.enhance_embeddings else self.feat_dim
-        )
-        self.embedding_size = (
+
+        # this is essentialy the hypernetwork head input dimension,
+        # features are passed and optionally may be enhanced with the output of the universal classifier
+        # and the support label (hence + 1)
+        single_support_embedding_len = self.feat_dim + \
+            (self.n_way + 1 if self.use_enhance_embeddings else 0)
+        embedding_size = (
             n_classes_in_embedding * n_support_per_class * single_support_embedding_len
         )
+        return embedding_size
 
-    def apply_embeddings_strategy(self, embeddings):
-        if self.hn_sup_aggregation == "mean":
-            new_embeddings = torch.zeros(self.n_way, *embeddings.shape[1:])
+    def apply_embeddings_strategy(self, embeddings: Tensor) -> Tensor:
+        match self.hn_sup_aggregation:
+            case 'mean':
+                new_embeddings = torch.zeros(
+                    self.n_way, *embeddings.shape[1:])
 
-            for i in range(self.n_way):
-                lower = i * self.n_support
-                upper = (i + 1) * self.n_support
-                new_embeddings[i] = embeddings[lower:upper, :].mean(dim=0)
+                for i in range(self.n_way):
+                    lower = i * self.n_support
+                    upper = (i + 1) * self.n_support
+                    new_embeddings[i] = embeddings[lower:upper, :].mean(
+                        dim=0)
 
-            return new_embeddings
+                return new_embeddings
+            case _:
+                return embeddings
 
-        return embeddings
+    def forward_hn(self, support_embeddings: Tensor) -> list[Tensor]:
+        def reshape(support_embeddings: Tensor, use_class_batch_input: bool):
+            if use_class_batch_input:
+                support_embeddings = support_embeddings.reshape(
+                    self.n_way, -1)
+            else:
+                support_embeddings = support_embeddings.flatten()
+            return support_embeddings
 
-    def get_support_data_labels(self):
-        return torch.repeat_interleave(
-            range(self.n_way), self.n_support
-        )  # labels for support data
+        def adapt(delta_params: Tensor, adaptation_strategy: Adaptation, alpha: float):
+            match adaptation_strategy:
+                case 'increasing_alpha':
+                    if alpha < 1:
+                        delta_params = alpha * delta_params
+                case None:
+                    pass
 
-    def get_hn_delta_params(self, support_embeddings: torch.Tensor):
+            return delta_params
+
         if self.hm_detach_before_hyper_net:
             support_embeddings = support_embeddings.detach()
 
-        if self.hm_use_class_batch_input:
-            delta_params_list = []
+        delta_params_list = []
+        for name, param_net in self.hypernet_heads.items():
 
-            for name, param_net in self.hypernet_heads.items():
-                support_embeddings_resh = support_embeddings.reshape(self.n_way, -1)
+            support_embeddings = reshape(
+                support_embeddings, self.hm_use_class_batch_input)
 
-                delta_params = param_net(support_embeddings_resh)
+            delta_params = param_net(support_embeddings)
+
+            delta_params = adapt(
+                delta_params,
+                self.hn_adaptation_strategy,
+                self.alpha
+            )
+
+            # __jm__ wtf happens here and what is this parameter hm_use_class_batch_input?
+            if self.hm_use_class_batch_input:
+
                 bias_neurons_num = self.target_net_param_shapes[name][0] // self.n_way
-
-                if self.hn_adaptation_strategy == "increasing_alpha" and self.alpha < 1:
-                    delta_params = delta_params * self.alpha
 
                 weights_delta = delta_params[:, :-bias_neurons_num]
                 bias_delta = delta_params[:, -bias_neurons_num:].flatten()
-                delta_params_list.extend([weights_delta, bias_delta])
+                delta_params_list.extend((
+                    weights_delta,
+                    bias_delta
+                ))
+            else:
+                if name in self.target_net_param_shapes.keys():
+                    delta_params = delta_params.reshape(
+                        self.target_net_param_shapes[name])
+                delta_params_list.extend((
+                    delta_params,
+                ))
 
-            return delta_params_list
-        delta_params_list = []
-
-        for name, param_net in self.hypernet_heads.items():
-            flattened_embeddings = support_embeddings.flatten()
-
-            delta = param_net(flattened_embeddings)
-
-            if name in self.target_net_param_shapes.keys():
-                delta = delta.reshape(self.target_net_param_shapes[name])
-
-            if self.hn_adaptation_strategy == "increasing_alpha" and self.alpha < 1:
-                delta = self.alpha * delta
-
-            delta_params_list.append(delta)
-
+        assert len(delta_params_list) == len(
+            list(self.classifier.parameters()))  # contract
         return delta_params_list
 
-    def _update_weight(self, weight, update_value):
-        if self.hm_update_operator == "minus":
-            if weight.fast is None:
-                weight.fast = weight - update_value
-            else:
-                weight.fast = weight.fast - update_value
-        elif self.hm_update_operator == "plus":
-            if weight.fast is None:
-                weight.fast = weight + update_value
-            else:
-                weight.fast = weight.fast + update_value
-        elif self.hm_update_operator == "multiply":
-            if weight.fast is None:
-                weight.fast = weight * update_value
-            else:
-                weight.fast = weight.fast * update_value
+    # invariant: always updates fast parameters, does not touch original params # contract
+    @property
+    def update_weight(self) -> Callable[[Tensor, Tensor], Tensor]:
+        return self._update_weight_op
 
-    def _get_p_value(self):
-        if self.epoch < self.hm_maml_warmup_epochs:
-            return 1.0
-        if (
-            self.hm_maml_warmup_epochs
-            <= self.epoch
-            < self.hm_maml_warmup_epochs + self.hm_maml_warmup_switch_epochs
-        ):
-            return (
-                self.hm_maml_warmup_switch_epochs
-                + self.hm_maml_warmup_epochs
-                - self.epoch
-            ) / (self.hm_maml_warmup_switch_epochs + 1)
-        return 0.0
-
-    def _update_network_weights(
+    def compute_tn_parameters(
         self,
-        delta_params_list,
-        support_embeddings,
-        support_data_labels,
-        _train_stage=False,
-    ):
-        if self.hm_maml_warmup and not self.single_test:
-            p = self._get_p_value()
+        delta_params_list: Optional[list[Tensor]],
+        support_embeddings: Tensor,
+        y_support: Tensor,
+    ) -> OrderedDict[str, Tensor]:
+        """
+            this method is called by both train and test code, as hypernet is always used
+            but warmup is only used during training, so warmup_coefficient should be abstracted away somehow        
+        """
+        # if delta_params_list is not None:
+        #     assert delta_params_list == self.forward_hn(support_embeddings) # contract
+        #     assert len(delta_params_list) == len(list(self.classifier.parameters())) # contract
 
-            if p > 0.0:
-                fast_parameters = []
+        # assert y_support == self.support_labels() # contract
 
-                if self.hm_maml_update_feature_net:
-                    fet_fast_parameters = list(self.feature.parameters())
-                    for weight in self.feature.parameters():
-                        weight.fast = None
-                    self.feature.zero_grad()
-                    fast_parameters = fast_parameters + fet_fast_parameters
+        self.classifier.zero_grad()
 
-                clf_fast_parameters = list(self.classifier.parameters())
-                for weight in self.classifier.parameters():
-                    weight.fast = None
-                self.classifier.zero_grad()
-                fast_parameters = fast_parameters + clf_fast_parameters
+        universal_parameters_dict = self.get_subdict(
+            OrderedDict(self.meta_named_parameters()), 'classifier')
+        assert universal_parameters_dict is not None
+        universal_parameters = universal_parameters_dict.values()
 
-                for _task_step in range(self.task_update_num):
-                    scores = self.classifier(support_embeddings)
+        def named(tn_parameters: Iterable[Tensor]) -> OrderedDict[str, Tensor]:
+            return OrderedDict(zip(
+                universal_parameters_dict.keys(),
+                tn_parameters
+            ))
 
-                    set_loss = self.loss_fn(scores, support_data_labels)
+        if self.warmup_ended:
+            assert delta_params_list is not None
 
-                    grad = torch.autograd.grad(
-                        set_loss, fast_parameters, create_graph=True, allow_unused=True
-                    )  # build full graph support gradient of gradient
+            return named(self.update_weight(weight, Δ) for weight, Δ
+                         in zip(universal_parameters, delta_params_list))
 
-                    if self.approx:
-                        grad = [
-                            g.detach() for g in grad
-                        ]  # do not calculate gradient of gradient if using first order approximation
+        tn_parameters: list[Tensor] = list(universal_parameters)
 
-                    if self.hm_maml_update_feature_net:
-                        # update weights of feature networ
-                        for k, weight in enumerate(self.feature.parameters()):
-                            update_value = self.train_lr * p * grad[k]
-                            self._update_weight(weight, update_value)
+        # for weight in self.classifier.parameters():
+        #     weight.fast = None
+        lr = self.Hyperparameters.inner_lr
+        gradient_steps = self.Hyperparameters.gradient_steps
+        λ = self.warmup_coefficient
 
-                    classifier_offset = (
-                        len(fet_fast_parameters)
-                        if self.hm_maml_update_feature_net
-                        else 0
-                    )
+        # default value to avoid conditionals
+        delta_params_list = [torch.scalar_tensor(0)] * len(tn_parameters)
 
-                    if p == 1:
-                        # update weights of classifier network by adding gradient
-                        for k, weight in enumerate(self.classifier.parameters()):
-                            update_value = self.train_lr * grad[classifier_offset + k]
-                            self._update_weight(weight, update_value)
+        # BUG: found in old implementation - tn_parameters are used to compute gradient,
+        # but are not updated with the gradient values in the same way that .parameters() are,
+        for _task_step in range(gradient_steps):
+            scores = self.classifier(
+                support_embeddings,
+                params=named(tn_parameters),
+            )
+            set_loss = self.loss_fn(scores, y_support)
 
-                    elif 0.0 < p < 1.0:
-                        # update weights of classifier network by adding gradient and output of hypernetwork
-                        for k, weight in enumerate(self.classifier.parameters()):
-                            update_value = (
-                                self.train_lr * p * grad[classifier_offset + k]
-                            ) + ((1 - p) * delta_params_list[k])
-                            self._update_weight(weight, update_value)
-            else:
-                for k, weight in enumerate(self.classifier.parameters()):
-                    update_value = delta_params_list[k]
-                    self._update_weight(weight, update_value)
-        else:
-            for k, weight in enumerate(self.classifier.parameters()):
-                update_value = delta_params_list[k]
-                self._update_weight(weight, update_value)
+            # __jm__ allow_unused - investigate, this defaults to False in classic maml
+            tn_grad = torch.autograd.grad(
+                set_loss, tn_parameters,
+                create_graph=(not self.approx), allow_unused=True
+            )  # build full graph support gradient of gradient
+            # create_graph=False equivalent to detaching tn_grad afterwards
 
-    def _get_list_of_delta_params(
-        self, maml_warmup_used, support_embeddings, support_data_labels
-    ):
-        if not maml_warmup_used:
-            if self.enhance_embeddings:
-                with torch.no_grad():
-                    logits = self.classifier.forward(support_embeddings).detach()
-                    logits = F.softmax(logits, dim=1)
+            # use a linear mix of gradient deltas and hypernet deltas for update
+            def update(x, g, Δ) -> Tensor:
+                update_grad = λ * lr * g
+                update_hn = (1 - λ) * Δ
+                update_value = update_grad + update_hn
+                return self.update_weight(x, update_value)
 
-                labels = support_data_labels.view(support_embeddings.shape[0], -1)
-                support_embeddings = torch.cat(
-                    (support_embeddings, logits, labels), dim=1
-                )
+            tn_parameters = [update(*args) for args
+                             in zip(tn_parameters, tn_grad, delta_params_list)]
 
-            for weight in self.parameters():
-                weight.fast = None
-            self.zero_grad()
+        named_tn_parameters = named(tn_parameters)
+        # assert set(dict(self.classifier.meta_named_parameters()).keys()) == set(named_tn_parameters.keys()) # contract
+        return named_tn_parameters
 
-            support_embeddings = self.apply_embeddings_strategy(support_embeddings)
+    def enhance_embeddings(self, support_embeddings: Tensor, support_labels: Tensor) -> Tensor:
+        with torch.no_grad():
+            # universal classifier predictions
+            logits = self.classifier.forward(
+                support_embeddings).detach()
+            logits = F.softmax(logits, dim=1)  # why?
 
-            delta_params = self.get_hn_delta_params(support_embeddings)
+        labels = support_labels.view(support_embeddings.shape[0], -1)
+        support_embeddings = torch.cat(
+            (support_embeddings, logits, labels), dim=1)
 
-            if self.hm_save_delta_params and len(self.delta_list) == 0:
-                self.delta_list = [{"delta_params": delta_params}]
+        return support_embeddings
 
-            return delta_params
-        return [torch.zeros(*i) for (_, i) in self.target_net_param_shapes.items()]
+    # @override MetaTemplate
+    def forward(self, x: Tensor, params=None) -> Tensor:
+        out = self.feature.forward(
+            x, params=self.get_subdict(params, 'feature'))
 
-    def forward(self, x):
-        out = self.feature.forward(x)
-
-        if self.hm_detach_feature_net:
+        if self.hm_detach_after_feature_net:
             out = out.detach()
 
-        scores = self.classifier.forward(out)
+        scores = self.classifier.forward(
+            out, params=self.get_subdict(params, 'classifier'))
         return scores
 
-    def set_forward(self, x, is_feature=False, train_stage=False):
-        """1. Get delta params from hypernetwork with support data.
-        2. Update target- network weights.
+    # @override MetaTemplate
+    def set_forward(self, x: Tensor, train_stage: bool):
+        """
+        1. Get delta params from hypernetwork with support data.
+        2. Update target network weights.
         3. Forward with query data.
-        4. Return scores"""
+        4. Return scores, total_delta_sum
+        total_delta_sum is a quantity used for loss regularization
+        """
 
-        assert is_feature == False, "MAML does not support fixed feature"
+        x_support, x_query = self._split_set(x)
+        support_labels = self.support_labels()
 
-        support_data = (
-            x[:, : self.n_support, :, :, :]
-            .contiguous()
-            .view(self.n_way * self.n_support, *x.size()[2:])
-        )  # support data
-        query_data = (
-            x[:, self.n_support :, :, :, :]
-            .contiguous()
-            .view(self.n_way * self.n_query, *x.size()[2:])
-        )  # query data
-        support_data_labels = self.get_support_data_labels()
+        # self.zero_grad() ? is called in _get_list_of_delta_params
 
-        support_embeddings = self.feature(support_data)
+        support_embeddings: Tensor = self.feature(x_support)
 
-        if self.hm_detach_feature_net:
+        if self.hm_detach_after_feature_net:
             support_embeddings = support_embeddings.detach()
 
-        maml_warmup_used = (
-            (not self.single_test)
-            and self.hm_maml_warmup
-            and (self.epoch < self.hm_maml_warmup_epochs)
-        )
+        # __jm__
+        # are we potentially losing gradient here, if n_task > 1 ?
+        # are gradients from subsequent runs reused?
+        self.zero_grad()
 
-        delta_params_list = self._get_list_of_delta_params(
-            maml_warmup_used, support_embeddings, support_data_labels
-        )
-
-        self._update_network_weights(
-            delta_params_list, support_embeddings, support_data_labels, train_stage
-        )
-
-        if self.hm_set_forward_with_adaptation and not train_stage:
-            scores = self.forward(support_data)
-            return scores, None
-        else:
-            if self.hm_support_set_loss and train_stage and not maml_warmup_used:
-                query_data = torch.cat((support_data, query_data))
-
-            scores = self.forward(query_data)
-
-            # sum of delta params for regularization
-            if self.hm_lambda != 0:
-                total_delta_sum = sum(
-                    delta_params.pow(2.0).sum() for delta_params in delta_params_list
+        delta_params_list: Optional[list[Tensor]] = None
+        if self.is_hypernet_ready:
+            if self.use_enhance_embeddings:
+                support_embeddings = self.enhance_embeddings(
+                    support_embeddings,
+                    support_labels,
                 )
 
-                return scores, total_delta_sum
-            else:
-                return scores, None
-
-    # __jm__ this needs to be removed
-    def set_forward_adaptation(self, x, is_feature=False):  # overwrite parrent function
-        raise ValueError(
-            "MAML performs further adapation simply by increasing task_upate_num"
-        )
-
-    def set_forward_loss(self, x):
-        scores, total_delta_sum = self.set_forward(
-            x, is_feature=False, train_stage=True
-        )
-        query_data_labels = torch.repeat_interleave(range(self.n_way), self.n_query)
-
-        if self.hm_support_set_loss:
-            support_data_labels = torch.repeat_interleave(
-                range(self.n_way), self.n_support
+            support_embeddings = self.apply_embeddings_strategy(
+                support_embeddings
             )
-            query_data_labels = torch.cat((support_data_labels, query_data_labels))
 
-        loss = self.loss_fn(scores, query_data_labels)
+            delta_params_list = self.forward_hn(
+                support_embeddings
+            )
 
-        if self.hm_lambda != 0:
-            loss = loss + self.hm_lambda * total_delta_sum
+        tn_params = self.compute_tn_parameters(
+            delta_params_list,
+            support_embeddings,
+            support_labels,
+        )
 
-        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
-        topk_ind = topk_labels.cpu().numpy().flatten()
-        y_labels = query_data_labels.cpu().numpy()
-        top1_correct = np.sum(topk_ind == y_labels)
-        task_accuracy = (top1_correct / len(query_data_labels)) * 100
+        hm_params = self.merge_subdict(tn_params, 'classifier')
 
-        return loss, task_accuracy
+        # sum of delta params for regularization
+        total_delta_sum: Optional[float] = None
+        if delta_params_list is not None and self.hm_lambda is not None:
+            total_delta_sum = sum(delta_params.pow(2.0).sum().item()
+                                  for delta_params in delta_params_list)
+
+        def x_case() -> Tensor:
+            if (not train_stage) and self.hm_test_set_forward_with_adaptation:
+                return x_support
+            if train_stage and self.hm_train_support_set_loss and self.is_hypernet_ready:
+                return torch.cat((x_support, x_query))
+            return x_query
+
+        x = x_case()
+
+        scores = self.forward(x, params=hm_params)
+        return scores, total_delta_sum
+
+# region warmup properties
+    @property
+    def epoch(self) -> int:
+        return self._epoch
+
+    def next_epoch(self):
+        self._epoch += 1
+
+    def set_last_epoch(self):
+        self._epoch = self.hm_maml_warmup_epochs + self.hm_maml_warmup_switch_epochs
+
+    def signal_test(self):
+        self.set_last_epoch()
+
+    @property
+    def warmup_coefficient(self):
+        l = self.hm_maml_warmup_epochs
+        r = l + self.hm_maml_warmup_switch_epochs
+        e = self.epoch
+
+        linear = (r - e) / (r - l + 1)
+        if e < l:
+            return 1.0
+        if e > r:
+            return 0.0
+        return linear
+
+    @property
+    def is_hypernet_ready(self) -> bool:
+        return self.warmup_coefficient < 1
+
+    @property
+    def warmup_ended(self):
+        return self.warmup_coefficient == 0
+
+# endregion
+
+    # @override MetaTemplate
+    def set_forward_loss(self, x):
+        """ returns loss, scores[logits] """
+        scores, total_delta_sum = self.set_forward(x, train_stage=True)
+
+        query_labels = self._query_labels()
+
+        loss = self.loss_fn(scores, query_labels)
+
+        if self.hm_lambda is not None:
+            assert total_delta_sum is not None
+            loss += self.hm_lambda * total_delta_sum
+
+        return loss, scores
 
     def set_forward_loss_with_adaptation(self, x):
-        scores, _ = self.set_forward(x, is_feature=False, train_stage=False)
-        support_data_labels = torch.from_numpy(
-            torch.repeat_interleave(range(self.n_way), self.n_support)
-        )
+        scores, _ = self.set_forward(x, train_stage=False)
+        support_data_labels = self.support_labels()
 
         loss = self.loss_fn(scores, support_data_labels)
-
-        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
-        topk_ind = topk_labels.cpu().numpy().flatten()
-        y_labels = support_data_labels.cpu().numpy()
-        top1_correct = np.sum(topk_ind == y_labels)
-        task_accuracy = (top1_correct / len(support_data_labels)) * 100
+        task_accuracy = self._task_accuracy(scores, support_data_labels)
 
         return loss, task_accuracy
 
-    def train_loop(self, _epoch, train_loader, optimizer):  # overwrite parrent function
+    # @override MetaTemplate
+    def train_loop(self, _epoch, train_loader, optimizer: Optimizer):  # overwrite parrent function
+        self.next_epoch()
+
         print_freq = 10
-        avg_loss = 0
+
+        n_task = self.Hyperparameters.n_task
+        batches = len(train_loader)
+        assert batches % n_task == 0
+
+        loss_all = torch.empty(n_task)
+        acc_all = torch.empty(batches)
+
         task_count = 0
-        loss_all = []
-        acc_all = []
-        optimizer.zero_grad()
+        total_loss = 0
 
-        self.delta_list = []
-
-        # train
         for i, (x, _) in enumerate(train_loader):
-            self.n_query = x.size(1) - self.n_support
-            assert self.n_way == x.size(0), "MAML does not support way change"
+            self._batch_guard(x)
 
-            loss, task_accuracy = self.set_forward_loss(x)
-            avg_loss = avg_loss + loss.item()  # .data[0]
-            loss_all.append(loss)
-            acc_all.append(task_accuracy)
+            optimizer.zero_grad()
+
+            loss, scores = self.set_forward_loss(x)
+            task_accuracy = self._task_accuracy(
+                scores, self._query_labels())
+            total_loss += loss.item()
+            loss_all[task_count] = loss
+            acc_all[i] = task_accuracy
 
             task_count += 1
 
-            if task_count == self.n_task:  # MAML update several tasks at one time
-                loss_q = torch.stack(loss_all).sum(0)
+            if task_count == n_task:  # MAML update several tasks at one time
+                loss_q = loss_all.sum()
                 loss_q.backward()
+                loss_all = loss_all.detach()
 
                 optimizer.step()
                 task_count = 0
-                loss_all = []
-            optimizer.zero_grad()
             if i % print_freq == 0:
+                running_avg_loss = total_loss / float(i + 1)
                 print(
-                    "Epoch {:d}/{:d} | Batch {:d}/{:d} | Loss {:f}".format(
+                    "Epoch {:d} | Batch {:d}/{:d} | Loss {:f}".format(
                         self.epoch,
-                        self.stop_epoch,
                         i,
-                        len(train_loader),
-                        avg_loss / float(i + 1),
+                        batches,
+                        running_avg_loss,
                     )
                 )
 
-        acc_all = np.asarray(acc_all)
-        acc_mean = np.mean(acc_all)
+        # assert fast params overwrite the standard parameters
 
-        metrics = {"accuracy/train": acc_mean}
+        metrics: dict[str, Any] = {"accuracy/train": acc_all.mean().item()}
 
         if self.hn_adaptation_strategy == "increasing_alpha":
             metrics["alpha"] = self.alpha
 
-        if self.hm_save_delta_params and len(self.delta_list) > 0:
-            delta_params = {"epoch": self.epoch, "delta_list": self.delta_list}
-            metrics["delta_params"] = delta_params
-
         if self.alpha < 1:
             self.alpha += self.hn_alpha_step
 
+        # __jm__ commented out because this does not make sense as a metric,
+        # if the last computed delta params are task or set specific,
+        # there is no point in using them to summarise an entire epoch except maybe
+        # as a sanity check to see whether the values blow up
+        # if self.hm_save_delta_params and len(self.delta_list) > 0:
+        #     delta_params = {"epoch": self.epoch, "delta_list": self.delta_list}
+        #     metrics["delta_params"] = delta_params
+
         return metrics
 
+    # @override MetaTemplate
     def test_loop(
-        self, test_loader, return_std=False, return_time: bool = False
-    ):  # overwrite parrent function
-        acc_all = []
-        self.delta_list = []
-        acc_at = defaultdict(list)
+        self, test_loader
+    ) -> TestResults:
+        self.signal_test()
 
-        iter_num = len(test_loader)
-
+        batches = len(test_loader)
+        acc_all = torch.empty(batches)
         eval_time = 0
 
-        if self.hm_set_forward_with_adaptation:
-            for _i, (x, _) in enumerate(test_loader):
-                self.n_query = x.size(1) - self.n_support
-                assert self.n_way == x.size(0), "MAML do not support way change"
+        # assert fast params are unset
+
+        acc_at = defaultdict(list)
+
+        for i, (x, _) in enumerate(test_loader):
+            self._batch_guard(x)
+            if self.hm_test_set_forward_with_adaptation:
                 s = time()
-                acc_task, acc_at_metrics = self.set_forward_with_adaptation(x)
+                task_accuracy, acc_at_metrics = \
+                    self.set_forward_with_adaptation(x)
                 t = time()
+                eval_time += t - s
+
                 for k, v in acc_at_metrics.items():
                     acc_at[k].append(v)
-                acc_all.append(acc_task)
-                eval_time += t - s
 
-        else:
-            for i, (x, _) in enumerate(test_loader):
-                self.n_query = x.size(1) - self.n_support
-                assert self.n_way == x.size(
-                    0
-                ), f"MAML do not support way change, {self.n_way=}, {x.size(0)=}"
+            else:
                 s = time()
-                correct_this, count_this = self.correct(x)
+                scores, _ = self.set_forward(x, train_stage=False)
                 t = time()
-                acc_all.append(correct_this / count_this * 100)
                 eval_time += t - s
+                task_accuracy = self._task_accuracy(
+                    scores, self.query_labels())
 
-        metrics = {k: np.mean(v) if len(v) > 0 else 0 for (k, v) in acc_at.items()}
+            acc_all[i] = task_accuracy
+        metrics = {k: np.mean(v) if len(
+            v) > 0 else 0 for (k, v) in acc_at.items()}
 
-        num_tasks = len(acc_all)
-        acc_all = np.asarray(acc_all)
-        acc_mean = np.mean(acc_all)
-        acc_std = np.std(acc_all)
+        acc_std, acc_mean = torch.std_mean(acc_all)
         print(
             "%d Test Acc = %4.2f%% +- %4.2f%%"
-            % (iter_num, acc_mean, 1.96 * acc_std / np.sqrt(iter_num))
+            % (batches, acc_mean, 1.96 * acc_std / math.sqrt(batches))
         )
-        print("Num tasks", num_tasks)
+        print(f"Num tasks = {batches=}")
 
-        ret = [acc_mean]
-        if return_std:
-            ret.append(acc_std)
-        if return_time:
-            ret.append(eval_time)
-        ret.append(metrics)
-
-        return ret
+        return TestResults(acc_mean.item(), acc_std.item(), eval_time, metrics)
 
     def set_forward_with_adaptation(self, x: torch.Tensor):
         self_copy = deepcopy(self)
 
-        # deepcopy does not copy "fast" parameters so it should be done manually
-        for param1, param2 in zip(self.parameters(), self_copy.parameters()):
-            if hasattr(param1, "fast"):
-                if param1.fast is not None:
-                    param2.fast = param1.fast.clone()
-                else:
-                    param2.fast = None
+    #     # deepcopy does not copy "fast" parameters so it should be done manually
+    #     for param1, param2 in zip(self.parameters(), self_copy.parameters()):
+    #         if hasattr(param1, "fast"):
+    #             if param1.fast is not None:
+    #                 param2.fast = param1.fast.clone()
+    #             else:
+    #                 param2.fast = None
 
-        metrics = {"accuracy/val@-0": self_copy.query_accuracy(x)}
+        ret = self_copy._set_forward_with_adaptation(x)
+
+        # free CUDA memory by deleting "fast" parameters
+        # for param in self_copy.parameters():
+        #     param.fast = None
+
+        return ret
+
+    def _set_forward_with_adaptation(self, x: Tensor):
+        scores, _ = self.set_forward(x, train_stage=True)
+        query_accuracy = self._task_accuracy(
+            scores, self.query_labels())
+        metrics = {"accuracy/val@-0": query_accuracy}
 
         val_opt_type = (
             torch.optim.Adam if self.hn_val_optim == "adam" else torch.optim.SGD
         )
-        val_opt = val_opt_type(self_copy.parameters(), lr=self.hn_val_lr)
+        val_opt = val_opt_type(self.parameters(), lr=self.hn_val_lr)
 
-        if self.hn_val_epochs > 0:
-            for i in range(1, self.hn_val_epochs + 1):
-                self_copy.train()
-                val_opt.zero_grad()
-                loss, val_support_acc = self_copy.set_forward_loss_with_adaptation(x)
-                loss.backward()
-                val_opt.step()
-                self_copy.eval()
-                metrics[f"accuracy/val_support_acc@-{i}"] = val_support_acc
-                metrics[f"accuracy/val_loss@-{i}"] = loss.item()
-                metrics[f"accuracy/val@-{i}"] = self_copy.query_accuracy(x)
+        for i in range(1, self.hn_val_epochs + 1):
+            self.train()
+            val_opt.zero_grad()
+            loss, val_support_acc = self.set_forward_loss_with_adaptation(
+                x)
+            loss.backward()
+            val_opt.step()
+            self.eval()
 
-        # free CUDA memory by deleting "fast" parameters
-        for param in self_copy.parameters():
-            param.fast = None
+            scores, _ = self.set_forward(x, train_stage=True)
+            query_accuracy = self._task_accuracy(
+                scores, self.query_labels())
+
+            metrics[f"accuracy/val_support_acc@-{i}"] = val_support_acc
+            metrics[f"accuracy/val_loss@-{i}"] = loss.item()
+            metrics[f"accuracy/val@-{i}"] = query_accuracy
 
         return metrics[f"accuracy/val@-{self.hn_val_epochs}"], metrics
 
-    def query_accuracy(self, x: torch.Tensor) -> float:
-        scores, _ = self.set_forward(x, train_stage=True)
-        return 100 * accuracy_from_scores(
-            scores, n_way=self.n_way, n_query=self.n_query
+    # __jm__ used exclusively when training
+    def _query_labels(self):
+        if self.hm_train_support_set_loss:
+            return torch.cat((
+                self.support_labels(),
+                self.query_labels()
+            ))
+        else:
+            return self.query_labels()
+
+# MAMLTemplate candidates:
+    class Hyperparameters:
+        inner_lr: float = 0.01
+        gradient_steps: int = 5
+        n_task: int = 4
+
+    def _task_accuracy(self, out: Tensor, y_true: Tensor) -> float:
+        _max_scores, max_labels = torch.max(out, dim=1)
+        max_labels = max_labels.flatten()
+        correct_preds_count = torch.sum(max_labels == y_true)
+        task_accuracy = (correct_preds_count / len(y_true)) * 100
+        return task_accuracy.item()
+
+    def _split_set(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        x_support = (
+            x[:, : self.n_support, :, :, :]
+            .contiguous()
+            .view(self.n_way * self.n_support, *x.size()[2:])
+        )
+        x_query = (
+            x[:, self.n_support:, :, :, :]
+            .contiguous()
+            .view(self.n_way * self.n_query, *x.size()[2:])
         )
 
-    def get_logits(self, x):
+        return x_support, x_query
+
+    def _batch_guard(self, x: Tensor):
         self.n_query = x.size(1) - self.n_support
-        logits, _ = self.set_forward(x)
-        return logits
-
-    def correct(self, x):
-        scores, _ = self.set_forward(x)
-        y_query = np.repeat(range(self.n_way), self.n_query)
-
-        _topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
-        topk_ind = topk_labels.cpu().numpy()
-        top1_correct = np.sum(topk_ind[:, 0] == y_query)
-        return float(top1_correct), len(y_query)
+        assert self.n_way == x.size(0),  \
+            f"MAML does not support way change, {
+                self.n_way=}, {x.size(0)=}"
