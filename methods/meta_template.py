@@ -1,19 +1,26 @@
 from abc import abstractmethod
-from collections import defaultdict
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
+from attr import dataclass
 from torch import Tensor
 
-import numpy as np
 import torch
-import torch.nn as nn
 
-from modules.module import MetaModule
 
 # policy should be no default implementations in template, lest they be actually obvious
 
+from modules.module import MetaModule
+
+
+@dataclass
+class TestResults:
+    accuracy_mean: float
+    accuracy_std: float
+    time: Optional[float]
+    metrics: dict
+
 
 class MetaTemplate(MetaModule):
-    def __init__(self, model_func: Callable[[], MetaModule], n_way, n_support, n_query, change_way=True):
+    def __init__(self, model_func: Callable[[], MetaModule], n_way: int, n_support: int, n_query: int, change_way=True):
         super().__init__()
         self.n_way = n_way
         self.n_support = n_support
@@ -89,7 +96,7 @@ class MetaTemplate(MetaModule):
     #                 )
     #             )
 
-    def test_loop(self, test_loader, record=None, return_std: bool = False):
+    def test_loop(self, test_loader) -> TestResults:
         raise ValueError(
             "MAML performs further adapation simply by increasing task_upate_num"
         )  # correct = 0

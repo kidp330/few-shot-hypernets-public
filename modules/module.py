@@ -1,14 +1,20 @@
+from typing import Optional
+from torch import Tensor
 import torch.nn as nn
 import re
 import warnings
 
 from collections import OrderedDict
+from torch.nn.parameter import Parameter
+
+MetaParamDict = OrderedDict[str, Tensor]
 
 
 class MetaModule(nn.Module):
     """
     Base class for PyTorch meta-learning modules. These modules accept an
     additional argument `params` in their `forward` method.
+    self.forward(x) === self.forward(x, params=dict(self.meta_named_parameters()))
 
     Notes
     -----
@@ -36,7 +42,6 @@ class MetaModule(nn.Module):
     def get_subdict(self, params, key=None):
         if params is None:
             return None
-
         all_names = tuple(params.keys())
         if (key, all_names) not in self._children_modules_parameters_cache:
             if key is None:
@@ -52,13 +57,31 @@ class MetaModule(nn.Module):
 
         names = self._children_modules_parameters_cache[(key, all_names)]
         if not names:
-            warnings.warn('Module `{0}` has no parameter corresponding to the '
-                          'submodule named `{1}` in the dictionary `params` '
-                          'provided as an argument to `forward()`. Using the '
-                          'default parameters for this submodule. The list of '
-                          'the parameters in `params`: [{2}].'.format(
-                              self.__class__.__name__, key, ', '.join(all_names)),
-                          stacklevel=2)
+            warnings.warn(
+                f"""Module `{self.__class__.__name__}` has no parameter corresponding to the submodule named `{key}`
+                    in the dictionary `params` provided as an argument to `forward()`.
+                    Using the default parameters for this submodule. The list of the parameters in `params`: {all_names}.""",
+                stacklevel=2)
             return None
 
         return OrderedDict([(name, params[f'{key}.{name}']) for name in names])
+
+    def merge_subdict(self, params: Optional[OrderedDict[str, Tensor]], key=None):
+        """
+            TODO: docstring
+        """
+
+        # assert set(params.keys()) == set(self.get_subdict(self.meta_named_parameters(), key)) # contract
+        # this means params must be a valid subdict of self
+        mnp = OrderedDict(self.meta_named_parameters())
+        if params is None:
+            return mnp
+
+        canonical_param_names = [f"{key}.{name}" for name in params.keys()]
+        # assert set(canonical_param_names).issubset(set(mnp.keys()))
+
+        mnp.update(zip(
+            canonical_param_names,
+            params.values(),
+        ))
+        return mnp

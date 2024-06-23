@@ -6,7 +6,8 @@ import configs
 import backbone
 from data.datamgr import SimpleDataManager
 from methods.hypernets import hypernet_types
-from io_utils import model_dict, parse_args, get_resume_file, get_best_file, get_assigned_file
+from io_utils import model_dict, get_resume_file, get_best_file, get_assigned_file
+from parsers.parsers import ParamHolder
 
 
 def save_features(model, data_loader, outfile):
@@ -53,16 +54,16 @@ def do_save_fts(params):
     split = params.split
     if params.dataset == 'cross':
         if split == 'base':
-            loadfile = configs.data_dir['miniImagenet'] + 'all.json'
+            loadfile = configs.data_dir['miniImagenet'] / 'all.json'
         else:
-            loadfile = configs.data_dir['CUB'] + split + '.json'
+            loadfile = configs.data_dir['CUB'] / f'{split}.json'
     elif params.dataset == 'cross_char':
         if split == 'base':
-            loadfile = configs.data_dir['omniglot'] + 'noLatin.json'
+            loadfile = configs.data_dir['omniglot'] / 'noLatin.json'
         else:
-            loadfile = configs.data_dir['emnist'] + split + '.json'
+            loadfile = configs.data_dir['emnist'] / f'{split}.json'
     else:
-        loadfile = configs.data_dir[params.dataset] + split + '.json'
+        loadfile = configs.data_dir[params.dataset] / f'{split}.json'
 
     checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (
         configs.save_dir, params.dataset, params.model, params.method)
@@ -107,6 +108,7 @@ def do_save_fts(params):
     else:
         model = model_dict[params.model]()
 
+    assert modelfile is not None  # HACK __jm__
     tmp = torch.load(modelfile)
     state = tmp['state']
     state_keys = list(state.keys())
@@ -128,5 +130,6 @@ def do_save_fts(params):
 
 
 if __name__ == '__main__':
-    params = parse_args('save_features')
+    # __jm__ TODO: _maybe_ create a custom script parameters class
+    params = ParamHolder().parse_args()
     do_save_fts(params)

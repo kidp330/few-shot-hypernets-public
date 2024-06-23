@@ -1,6 +1,7 @@
 # This code is modified from https://github.com/facebookresearch/low-shot-shrink-hallucinate
 
 import math
+import time
 
 import torch
 import torch.nn as nn
@@ -14,8 +15,12 @@ from modules.linear import MetaLinear
 from modules.module import MetaModule
 
 
+def get_default_device():
+    return 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
 def set_default_device():
-    torch.set_default_device('cuda' if torch.cuda.is_available() else 'cpu')
+    torch.set_default_device(get_default_device())
 
 
 def init_layer(L):
@@ -63,142 +68,30 @@ class distLinear(MetaModule):
         return scores
 
 
-class Flatten(MetaModule):
+class Flatten(nn.Module):
     def __init__(self):
         super(Flatten, self).__init__()
 
-    def forward(self, x, params=None):
+    def forward(self, x):
         return x.view(x.size(0), -1)
-
-
-# class Linear_fw(MetaL):  # used in MAML to forward input with fast weight
-#     def __init__(self, in_features, out_features):
-#         super(Linear_fw, self).__init__(in_features, out_features)
-#         self.weight.fast = None  # Lazy hack to add fast weight link
-#         self.bias.fast = None
-
-#     def forward(self, x):
-#         if self.weight.fast is not None and self.bias.fast is not None:
-#             out = F.linear(
-#                 x, self.weight.fast, self.bias.fast
-#             )  # weight.fast (fast weight) is the temporaily adapted weight
-#         else:
-#             out = super(Linear_fw, self).forward(x)
-#         return out
-
-
-# class BLinear_fw(Linear_fw):  # used in BHMAML to forward input with fast weight
-#     def __init__(self, in_features, out_features):
-#         super(BLinear_fw, self).__init__(in_features, out_features)
-#         self.weight.logvar = None
-#         self.weight.mu = None
-#         self.bias.logvar = None
-#         self.bias.mu = None
-
-#     def forward(self, x):
-#         if self.weight.fast is not None and self.bias.fast is not None:
-#             preds = []
-#             for w, b in zip(self.weight.fast, self.bias.fast):
-#                 preds.append(F.linear(x, w, b))
-
-#             out = sum(preds) / len(preds)
-#         else:
-#             out = super(BLinear_fw, self).forward(x)
-#         return out
-
-
-# class Conv2d_fw(nn.Conv2d):  # used in MAML to forward input with fast weight
-#     def __init__(
-#         self, in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True
-#     ):
-#         super(Conv2d_fw, self).__init__(
-#             in_channels,
-#             out_channels,
-#             kernel_size,
-#             stride=stride,
-#             padding=padding,
-#             bias=bias,
-#         )
-#         self.weight.fast = None
-#         if not self.bias is None:
-#             self.bias.fast = None
-
-#     def forward(self, x):
-#         if self.bias is None:
-#             if self.weight.fast is not None:
-#                 out = F.conv2d(
-#                     x, self.weight.fast, None, stride=self.stride, padding=self.padding
-#                 )
-#             else:
-#                 out = super(Conv2d_fw, self).forward(x)
-#         else:
-#             if self.weight.fast is not None and self.bias.fast is not None:
-#                 out = F.conv2d(
-#                     x,
-#                     self.weight.fast,
-#                     self.bias.fast,
-#                     stride=self.stride,
-#                     padding=self.padding,
-#                 )
-#             else:
-#                 out = super(Conv2d_fw, self).forward(x)
-
-#         return out
-
-
-# # used in MAML to forward input with fast weight
-# class BatchNorm2d_fw(nn.BatchNorm2d):
-#     def __init__(self, num_features):
-#         super(BatchNorm2d_fw, self).__init__(num_features)
-#         self.weight.fast = None
-#         self.bias.fast = None
-
-#     def forward(self, x):
-#         running_mean = torch.zeros(x.data.size()[1])
-#         running_var = torch.ones(x.data.size()[1])
-#         if self.weight.fast is not None and self.bias.fast is not None:
-#             out = F.batch_norm(
-#                 x,
-#                 running_mean,
-#                 running_var,
-#                 self.weight.fast,
-#                 self.bias.fast,
-#                 training=True,
-#                 momentum=1,
-#             )
-#             # batch_norm momentum hack: follow hack of Kate Rakelly in pytorch-maml/src/layers.py
-#         else:
-#             out = F.batch_norm(
-#                 x,
-#                 running_mean,
-#                 running_var,
-#                 self.weight,
-#                 self.bias,
-#                 training=True,
-#                 momentum=1,
-#             )
-#         return out
 
 
 # Simple Conv Block
 class ConvBlock(MetaModule):
     def __init__(self, indim, outdim, pool=True, padding=1):
         super(ConvBlock, self).__init__()
-        self.indim = indim
-        self.outdim = outdim
-        self.C = MetaConv2d(indim, outdim, 3, padding=padding)
-        self.BN = MetaBatchNorm2d(outdim)
-        self.relu = nn.ReLU(inplace=True)
 
-        self.parametrized_layers = [self.C, self.BN, self.relu]
+        parametrized_layers = [
+            MetaConv2d(indim, outdim, 3, padding=padding),
+            MetaBatchNorm2d(outdim),
+            nn.ReLU(inplace=True)]
         if pool:
-            self.pool = nn.MaxPool2d(2)
-            self.parametrized_layers.append(self.pool)
+            parametrized_layers.append(nn.MaxPool2d(2))
 
-        for layer in self.parametrized_layers:
+        for layer in parametrized_layers:
             init_layer(layer)
 
-        self.trunk = MetaSequential(*self.parametrized_layers)
+        self.trunk = MetaSequential(*parametrized_layers)
 
     def forward(self, x, params=None):
         out = self.trunk(x, params=self.get_subdict(params, 'trunk'))

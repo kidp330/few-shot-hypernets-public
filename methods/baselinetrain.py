@@ -1,23 +1,22 @@
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
-
 import backbone
-from typing import Literal
 
+from typing import Callable, Literal, Never
+
+from torch import Tensor
 from methods.meta_template import MetaTemplate
+from modules.module import MetaModule
 
 
-class BaselineTrain(pl.LightningModule):
+class BaselineTrain(MetaTemplate):
     def __init__(
         self,
-        model_func: pl.LightningModule,
+        model_func: Callable[[], MetaModule],
         n_classes: int,
-        scale_factor: int,
         loss_type: Literal["softmax", "dist"] = "softmax",
     ):
-        super().__init__()
-        self.feature = model_func()
+        super().__init__(model_func, n_classes, -1, -1)
 
         if loss_type == "softmax":
             self.linear_clf = nn.Linear(self.feature.final_feat_dim, n_classes)
@@ -26,7 +25,6 @@ class BaselineTrain(pl.LightningModule):
             self.linear_clf = backbone.distLinear(
                 indim=self.feature.final_feat_dim,
                 outdim=n_classes,
-                scale_factor=scale_factor,
             )
 
         self.loss_type = loss_type
@@ -50,7 +48,7 @@ class BaselineTrain(pl.LightningModule):
 
 class BaselineFinetune(MetaTemplate):
     def __init__(self, baseline: BaselineTrain):
-        super().__init__(model_func=baseline.feature, change_way=True)
+        super().__init__(baseline.feature, -1, -1, -1, change_way=True)
         self.baseline = baseline
 
     # @override MetaTemplate
@@ -58,7 +56,6 @@ class BaselineFinetune(MetaTemplate):
         # Baseline always does adaptation
         return self.set_forward_adaptation(x, is_feature)
 
-    # TODO: use lightning trainer here
     # @override MetaTemplate
     def set_forward_adaptation(self, x, is_feature=True):
         assert is_feature == True, "Baseline only supports testing with feature"
@@ -69,17 +66,18 @@ class BaselineFinetune(MetaTemplate):
         z_support = z_support.contiguous().view(self.n_way * self.n_support, -1)
         z_query = z_query.contiguous().view(self.n_way * self.n_query, -1)
 
-        y_support = torch.repeat_interleave(range(self.n_way), self.n_support)
+        y_support = self.support_labels()
 
         set_optimizer = torch.optim.SGD(
-            self.linear_clf.parameters(),
+            self.baseline.linear_clf.parameters(),
             lr=0.01,
             momentum=0.9,
             dampening=0.9,
             weight_decay=0.001,
         )
 
-        loss_function = nn.CrossEntropyLoss()
+        loss_function: Callable[[Tensor, Tensor],
+                                Tensor] = nn.CrossEntropyLoss()
 
         batch_size = 4
         support_size = self.n_way * self.n_support
@@ -87,22 +85,22 @@ class BaselineFinetune(MetaTemplate):
             rand_id = torch.randperm(support_size)
             for i in range(0, support_size, batch_size):
                 set_optimizer.zero_grad()
-                selected_id = rand_id[i : min(i + batch_size, support_size)]
+                selected_id = rand_id[i: min(i + batch_size, support_size)]
                 z_batch = z_support[selected_id]
                 y_batch = y_support[selected_id]
-                scores = self.linear_clf(z_batch)
+                scores: Tensor = self.baseline.linear_clf(z_batch)
                 loss = loss_function(scores, y_batch)
                 loss.backward()
                 set_optimizer.step()
-        scores = self.linear_clf(z_query)
+        scores = self.baseline.linear_clf(z_query)
         return scores
 
     # @override MetaTemplate
-    def set_forward_loss(self, x):
+    def set_forward_loss(self, x) -> Never:
         raise NotImplementedError(
             "Baseline predicts on pretrained feature and does not support finetune backbone"
         )
 
     # @override MetaTemplate
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         return self.baseline.forward(x)
