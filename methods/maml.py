@@ -146,10 +146,6 @@ class MAML(MetaTemplate):
             self._batch_guard(x)
 
             s = time()
-            if i < 2:
-                self.log = True
-            else:
-                self.log = False
             scores = self.set_forward(x)
             t = time()
             eval_time += t - s

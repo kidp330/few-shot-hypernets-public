@@ -5,7 +5,7 @@ from typing import Any, Literal, Sized,  Optional
 
 import numpy as np
 import torch
-import random
+from torch.utils.data import DataLoader
 from methods.meta_template import MetaTemplate
 from neptune_utils import Run
 import torch.optim
@@ -16,44 +16,23 @@ import configs
 from torch.optim.lr_scheduler import LRScheduler
 import backbone
 from data.datamgr import SimpleDataManager, SetDataManager
-from methods.baselinetrain import BaselineTrain
-from methods.DKT import DKT
 # from methods.hypernets.hypernet_poc import HyperNetPOC
 # from methods.hypernets import hypernet_types
-from methods.protonet import ProtoNet
-from methods.matchingnet import MatchingNet
-from methods.relationnet import RelationNet
 from methods.maml import MAML
 from methods.hypernets.bayeshmaml import BayesHMAML
 from methods.hypernets.hypermaml import HyperMAML
-from io_utils import model_dict, get_resume_file
+from io_utils import get_resume_file
 import neptune_utils as neptune
 import shutil
 
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from modules.module import MetaModule
 from parsers.train import TrainParams
 from parsers.types.general import Dataset, Optim, Scheduler
 from save_features import do_save_fts
-from test import perform_test
 
-
-def _set_seed(seed, verbose=True):
-    if (seed != 0):
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        if (verbose):
-            print("[INFO] Setting SEED: " + str(seed))
-    else:
-        if (verbose):
-            print("[INFO] Setting SEED: None")
+from common import set_seed, setup_model, _image_size, params_guards
 
 
 def set_optimizer(optim: Optim, parameters, lr: float):
@@ -75,7 +54,11 @@ def save_epoch_state(epoch: int, model: MetaTemplate, checkpoint_dir: Path, file
                checkpoint_dir / f'{filename}.tar')
 
 
-def train(base_loader, val_loader, model: MetaTemplate, checkpoint_dir: Path, start_epoch, stop_epoch, params: TrainParams, *,
+def train(base_loader: DataLoader, val_loader: DataLoader,
+          model: MetaTemplate,
+          checkpoint_dir: Path,
+          start_epoch: int, stop_epoch: int,
+          params: TrainParams,
           neptune_run: Optional[Run] = None):
     print(f"Total epochs: {stop_epoch}")
 
@@ -84,7 +67,7 @@ def train(base_loader, val_loader, model: MetaTemplate, checkpoint_dir: Path, st
     max_acc = 0
     max_train_acc = 0
 
-    max_acc_adaptation_dict: defaultdict[str, list] = defaultdict(list)
+    max_acc_adaptation_dict = defaultdict(list)
     if params.test_set_forward_with_adaptation:
         max_acc_adaptation_dict["adaptation/accuracy/val_max"] = [0] * \
             (params.hn_val_epochs + 1)
@@ -104,10 +87,11 @@ def train(base_loader, val_loader, model: MetaTemplate, checkpoint_dir: Path, st
         params.lr_scheduler, params.milestones, optimizer, stop_epoch)
 
     print("Starting training")
-    print("Params accessed until this point:")
-    print("\n\t".join(sorted(params.history)))
-    print("Params ignored until this point:")
-    print("\n\t".join(params.get_ignored_args()))
+    # print("Params accessed until this point:")
+    # print("\n\t".join(sorted(params.history)))
+    # print("Params ignored until this point:")
+    # print("\n\t".join(params.get_ignored_args()))
+    # __jm__ need issue for this
 
     for epoch in range(start_epoch, stop_epoch):
         if epoch >= params.es_epoch and max_acc < params.es_threshold:
@@ -188,10 +172,8 @@ def train(base_loader, val_loader, model: MetaTemplate, checkpoint_dir: Path, st
 
     if neptune_run is None:
         return
-
     neptune.track(neptune_run, checkpoint_dir, "best_model")
     neptune.track(neptune_run, checkpoint_dir, "last_model")
-
     if params.maml_save_feature_network:
         neptune.track(neptune_run, checkpoint_dir, "best_feature_net")
         neptune.track(neptune_run, checkpoint_dir, "last_feature_net")
@@ -237,34 +219,50 @@ def get_scheduler(scheduler: Scheduler, milestones: Optional[list[int]], optimiz
                                                 range(0, stop_epoch, stop_epoch // 4))[1:],
                                             gamma=1)
         case "cosine":
-            T_0 = stop_epoch
             return lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer,
-                T_0=T_0
+                T_0=stop_epoch
             )
         case "reducelronplateau":
             raise NotImplemented()
 
 
-def params_guards(params: TrainParams):
-    if params.dataset in ['omniglot', 'cross_char']:
-        assert params.model == 'Conv4' and not params.train_aug, 'omniglot only support Conv4 without augmentation'
-        # params.model = 'Conv4S'
-        # no need for this, since omniglot is loaded as RGB
+def get_dataloaders(params: TrainParams) -> tuple[DataLoader, DataLoader]:
+    match params.method:
+        case 'baseline' | 'baseline++':
+            base_datamgr = SimpleDataManager(image_size, batch_size=16)
+            base_loader = base_datamgr.get_data_loader(
+                base_file, aug=params.train_aug)
+            val_datamgr = SimpleDataManager(image_size, batch_size=64)
+            val_loader = val_datamgr.get_data_loader(val_file, aug=False)
+            return base_loader, val_loader
+        case _:
+            n_query = max(1, int(
+                # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
+                16 * params.test_n_way / params.train_n_way))
 
-    if params.method in ['baseline', 'baseline++']:
-        if params.dataset == 'omniglot':
-            assert params.num_classes >= 4112, 'class number need to be larger than max label id in base class'
-        if params.dataset == 'cross_char':
-            assert params.num_classes >= 1597, 'class number need to be larger than max label id in base class'
+            # a batch for SetDataManager: a [n_way, n_support + n_query, dim, w, h] tensor
+            base_datamgr = SetDataManager(
+                image_size,
+                n_way=params.test_n_way,
+                n_support=params.n_shot,
+                n_query=n_query)  # n_eposide=100
+            base_loader = base_datamgr.get_data_loader(
+                base_file, aug=params.train_aug)
+
+            val_datamgr = SetDataManager(
+                image_size, n_way=params.test_n_way, n_support=params.n_shot, n_query=n_query)
+            val_loader = val_datamgr.get_data_loader(val_file, aug=False)
+
+            return base_loader, val_loader
 
 
 if __name__ == '__main__':
     backbone.set_default_device()
     params = TrainParams().parse_args()
-    _set_seed(params.seed)
+    set_seed(params.seed)
 
-    def files(dataset: Dataset) -> tuple[Path, Path]:
+    def _files(dataset: Dataset) -> tuple[Path, Path]:
         match dataset:
             case 'cross':
                 return configs.data_dir['miniImagenet'] / 'all.json', configs.data_dir['CUB'] / 'val.json'
@@ -272,15 +270,9 @@ if __name__ == '__main__':
                 return configs.data_dir['omniglot'] / 'noLatin.json', configs.data_dir['emnist'] / 'val.json'
             case _:
                 return configs.data_dir[params.dataset] / 'base.json', configs.data_dir[params.dataset] / 'val.json'
-    base_file, val_file = files(params.dataset)
+    base_file, val_file = _files(params.dataset)
 
-    def _image_size() -> Literal[28] | Literal[84] | Literal[224]:
-        if 'Conv' in params.model:
-            if params.dataset in ['omniglot', 'cross_char']:
-                return 28
-            return 84
-        return 224
-    image_size = _image_size()
+    image_size = _image_size(params)
 
     def stop_epoch_default():
         if params.method in ['baseline', 'baseline++']:
@@ -302,108 +294,7 @@ if __name__ == '__main__':
     if params.stop_epoch is None:
         params.stop_epoch = stop_epoch_default()
 
-    match params.method:
-        case 'baseline' | 'baseline++':
-            base_datamgr = SimpleDataManager(image_size, batch_size=16)
-            base_loader = base_datamgr.get_data_loader(
-                base_file, aug=params.train_aug)
-            val_datamgr = SimpleDataManager(image_size, batch_size=64)
-            val_loader = val_datamgr.get_data_loader(val_file, aug=False)
-
-            match params.method:
-                case 'baseline':
-                    model = BaselineTrain(
-                        model_dict[params.model], params.num_classes)
-                case 'baseline++':
-                    model = BaselineTrain(
-                        model_dict[params.model], params.num_classes, loss_type='dist')
-
-        case 'DKT' | 'protonet' | 'matchingnet' | 'relationnet' | 'relationnet_softmax' | 'maml' | 'maml_approx' | 'hyper_maml' | 'bayes_hmaml':
-            n_query = max(1, int(
-                # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
-                16 * params.test_n_way / params.train_n_way))
-            print("n_query", n_query)
-
-            n_way = params.train_n_way
-            n_support = params.n_shot
-            train_few_shot_params = dict(
-                n_way=n_way,
-                n_support=n_support,
-                n_query=n_query
-            )
-
-            base_datamgr = SetDataManager(
-                image_size, **train_few_shot_params)  # n_eposide=100
-            base_loader = base_datamgr.get_data_loader(
-                base_file, aug=params.train_aug)
-
-            test_few_shot_params = dict(
-                n_way=params.test_n_way, n_support=params.n_shot, n_query=n_query)
-
-            val_datamgr = SetDataManager(image_size, **test_few_shot_params)
-            val_loader = val_datamgr.get_data_loader(val_file, aug=False)
-            # a batch for SetDataManager: a [n_way, n_support + n_query, dim, w, h] tensor
-
-            match params.method:
-                case 'DKT':
-                    dkt_train_few_shot_params = dict(
-                        n_way=params.train_n_way, n_support=params.n_shot)
-                    model = DKT(model_dict[params.model], **
-                                dkt_train_few_shot_params)
-                    model.init_summary()
-                case 'protonet':
-                    model = ProtoNet(
-                        model_dict[params.model], **train_few_shot_params)
-                case 'matchingnet':
-                    model = MatchingNet(
-                        model_dict[params.model], **train_few_shot_params)
-                case 'relationnet' | 'relationnet_softmax':
-                    match params.model:
-                        case 'Conv4':
-                            feature_model = backbone.Conv4NP
-                        case 'Conv6':
-                            feature_model = backbone.Conv6NP
-                        case 'Conv4S':
-                            feature_model = backbone.Conv4SNP
-                        case _:
-                            def feature_model() -> MetaModule: return model_dict[params.model](
-                                flatten=False)
-                    loss_type = 'mse' if params.method == 'relationnet' else 'softmax'
-
-                    model = RelationNet(
-                        feature_model, loss_type=loss_type, **train_few_shot_params)
-                case 'maml' | 'maml_approx':
-                    # maml uses different parameter in omniglot
-                    hypers = MAML.Hyperparameters()
-                    if params.dataset in ['omniglot', 'cross_char']:
-                        hypers = MAML.Hyperparameters(32//2, 0.1, 1)
-                    model = MAML(
-                        model_dict[params.model],
-                        n_way, n_support, n_query,
-                        params, hypers,
-                        approx=(params.method == 'maml_approx')
-                    )
-                # __jm__ TODO:
-                # elif params.method in hypernet_types.keys():
-                #     hn_type: Type[HyperNetPOC] = hypernet_types[params.method]
-                #     model = hn_type(model_dict[params.model],
-                #                     params=params, **train_few_shot_params)
-                case 'hyper_maml' | 'bayes_hmaml':
-                    if params.method == 'bayes_hmaml':
-                        model = BayesHMAML(
-                            model_dict[params.model], n_way, n_support, n_query, params, approx=False)
-                    else:
-                        model = HyperMAML(
-                            model_dict[params.model], n_way, n_support, n_query, params, approx=False)
-                    # maml use different parameter in omniglot
-                    # __jm__ TODO:
-                    # if params.dataset in ['omniglot', 'cross_char']:
-                    #     model.n_task = 32
-                    #     model.task_update_num = 1
-                    #     model.train_lr = 0.1
-        # case list(hypernet_types.keys()):
-        case _:
-            raise ValueError('Unknown method')
+    model = setup_model(params)
 
     params.checkpoint_dir = configs.save_dir / 'checkpoints' / \
         params.dataset / params.model / params.method
@@ -411,7 +302,7 @@ if __name__ == '__main__':
     if params.train_aug:
         params.checkpoint_dir /= '_aug'
     if params.method not in ['baseline', 'baseline++']:
-        params.checkpoint_dir /= f'_{n_way}way_{n_support}shot'
+        params.checkpoint_dir /= f'_{params.train_n_way}way_{params.n_shot}shot'  # nopep8
     params.checkpoint_dir /= params.checkpoint_suffix
 
     if not os.path.isdir(params.checkpoint_dir):
@@ -436,10 +327,10 @@ if __name__ == '__main__':
             print("Resuming training from", resume_file, "epoch", start_epoch)
 
     elif params.warmup:  # We also support warmup from pretrained baseline feature, but we never used it in our paper
-        baseline_checkpoint_dir = '%s/checkpoints/%s/%s_%s' % (
-            configs.save_dir, params.dataset, params.model, 'baseline')
+        baseline_checkpoint_dir = configs.save_dir / 'checkpoints' / \
+            params.dataset / params.model / 'baseline'
         if params.train_aug:
-            baseline_checkpoint_dir += '_aug'
+            baseline_checkpoint_dir /= '_aug'
         warmup_resume_file = get_resume_file(baseline_checkpoint_dir)
         assert warmup_resume_file is not None
         tmp = torch.load(warmup_resume_file)
@@ -458,17 +349,14 @@ if __name__ == '__main__':
             raise ValueError('No warm_up file')
 
     with (params.checkpoint_dir / "args.json").open("w") as f:
+        # default is needed for Path-type parameters
         json.dump(params.as_dict(), f, indent=2, default=lambda obj: str(obj))
 
     with (params.checkpoint_dir / "rerun.sh").open("w") as f:
         print("python", " ".join(sys.argv), file=f)
 
-    neptune_run = neptune.setup(params)
-
-    if neptune_run is not None:
-        neptune_run["model"] = str(model)
-
-    train(base_loader, val_loader, model, params.checkpoint_dir, start_epoch, stop_epoch, params,
+    neptune_run = neptune.setup(params, model)
+    train(*get_dataloaders(params), model, params.checkpoint_dir, start_epoch, stop_epoch, params,
           neptune_run=neptune_run)
 
     params.split = "novel"

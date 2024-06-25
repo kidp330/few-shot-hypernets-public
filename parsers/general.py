@@ -5,8 +5,8 @@ from parsers.types.general import *
 
 
 class GeneralParams(Tap):
-    seed: int = 0
-    "Seed for Numpy and pyTorch."
+    seed: Optional[int]
+    "Seed for Numpy and pyTorch. Run is non-deterministic when not set"
 
     dataset: Dataset
     "The dataset used for training the model. Refer to Dataset for allowed values"
